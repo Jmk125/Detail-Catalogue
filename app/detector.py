@@ -1,5 +1,14 @@
 from pathlib import Path
-import cv2
+import ctypes.util
+import importlib
+
+
+def _cv2():
+    # OpenCV wheels require system image libraries such as libGL on some Linux hosts.
+    # If they are absent, keep the app usable and let the reviewer add boxes manually.
+    if ctypes.util.find_library("GL") is None:
+        return None
+    return importlib.import_module("cv2")
 
 
 def _union(a, b):
@@ -115,6 +124,9 @@ def _merge_labels_under_details(boxes, sheet_w, sheet_h):
 
 
 def detect_candidate_detail_boxes(image_path: Path, max_boxes: int = 80) -> list[dict]:
+    cv2 = _cv2()
+    if cv2 is None:
+        return []
     img = cv2.imread(str(image_path))
     if img is None:
         return []
