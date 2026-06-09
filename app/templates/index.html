@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Detail Harvester MVP</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Detail Harvester MVP</h1>
+    <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>1. Upload Drawing Set</h2>
+
+      <div class="meta-grid">
+        <label>
+          Project Name
+          <input id="projectName" type="text" placeholder="Example: North Ridgeville HS" />
+        </label>
+        <label>
+          Design Team
+          <input id="designTeam" type="text" placeholder="Example: GPD Group / ThenDesign / etc." />
+        </label>
+      </div>
+
+      <div id="dropZone">
+        <strong>Drag PDF here</strong>
+        <span>or click to choose a drawing set</span>
+        <input id="pdfFile" type="file" accept="application/pdf" />
+      </div>
+
+      <button id="uploadBtn">Upload & Detect</button>
+      <span id="status"></span>
+    </section>
+
+    <section id="reviewPanel" class="panel hidden">
+      <div class="toolbar">
+        <div>
+          <h2>2. Review Sheet</h2>
+          <span id="sheetInfo"></span>
+        </div>
+        <div class="buttons">
+          <button id="prevBtn">Prev</button>
+          <button id="nextBtn">Next</button>
+          <button id="fitBtn">Fit</button>
+          <button id="actualBtn">100%</button>
+          <button id="addBoxBtn">Add Box</button>
+          <button id="deleteBtn">Delete Selected</button>
+          <button id="approveBtn">Approve Sheet</button>
+          <button id="downloadBtn">Download Project</button>
+        </div>
+      </div>
+
+      <div class="workspace">
+        <div id="canvasWrap">
+          <div id="sheetStage">
+            <img id="sheetImage" alt="Sheet" draggable="false" />
+            <div id="boxLayer"></div>
+          </div>
+        </div>
+
+        <aside>
+          <h3>Review Controls</h3>
+          <p class="hint">
+            Wheel = zoom. Right-click drag anywhere in the gray workspace = pan.
+            Drag inside a box = move. Drag near any box edge/corner = resize.
+            Delete key removes selected box. If a dragged box overlaps another box by 50%+, the smaller box is merged/deleted on mouse-up.
+          </p>
+          <h3>Boxes</h3>
+          <ol id="boxList"></ol>
+          <h3>Saved Details</h3>
+          <div id="detailsList"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

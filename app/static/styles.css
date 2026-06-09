@@ -1,0 +1,198 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f4f4f4;
+  color: #222;
+}
+
+header {
+  background: #222;
+  color: white;
+  padding: 18px 24px;
+}
+
+header h1 { margin: 0 0 6px; }
+header p { margin: 0; color: #ddd; }
+
+main { padding: 18px; }
+
+.panel {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.hidden { display: none; }
+
+button {
+  padding: 8px 12px;
+  border: 1px solid #888;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+button:hover { background: #eee; }
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.meta-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-weight: bold;
+}
+
+.meta-grid input {
+  padding: 9px;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+}
+
+#dropZone {
+  border: 2px dashed #888;
+  border-radius: 10px;
+  background: #fafafa;
+  padding: 28px;
+  text-align: center;
+  margin-bottom: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#dropZone.dragover {
+  background: #eef7ff;
+  border-color: #0099ff;
+}
+
+#pdfFile { display: none; }
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1fr 330px;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+#canvasWrap {
+  position: relative;
+  overflow: auto;
+  height: 76vh;
+  border: 1px solid #bbb;
+  background: #ddd;
+  user-select: none;
+}
+
+#canvasWrap.panning {
+  cursor: grabbing;
+}
+
+#sheetStage {
+  position: relative;
+  transform-origin: 0 0;
+  margin: 900px;
+}
+
+#sheetImage {
+  display: block;
+  max-width: none;
+  user-select: none;
+}
+
+#boxLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.crop-box {
+  position: absolute;
+  border-style: solid;
+  border-color: #0099ff;
+  background: rgba(0, 153, 255, 0.08);
+  pointer-events: auto;
+}
+
+.crop-box.selected {
+  border-color: #ff8800;
+  background: rgba(255, 136, 0, 0.12);
+}
+
+.crop-box.merge-target {
+  border-color: #cc00ff;
+  background: rgba(204, 0, 255, 0.10);
+}
+
+.crop-box .label {
+  position: absolute;
+  left: 0;
+  top: -22px;
+  background: #0099ff;
+  color: white;
+  font-size: 12px;
+  padding: 2px 5px;
+}
+
+.crop-box.selected .label { background: #ff8800; }
+
+/* Resize is handled by cursor hit-testing in JavaScript rather than visible handles. */
+
+aside {
+  border-left: 1px solid #ddd;
+  padding-left: 12px;
+  max-height: 76vh;
+  overflow: auto;
+}
+
+.hint {
+  color: #555;
+  font-size: 13px;
+}
+
+#boxList li {
+  padding: 4px;
+  margin-bottom: 3px;
+  cursor: pointer;
+}
+
+#boxList li.selected {
+  background: #fff0d6;
+}
+
+.detail-card {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  margin: 8px 0;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.detail-card img {
+  max-width: 100%;
+  border: 1px solid #ccc;
+}
