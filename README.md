@@ -37,6 +37,18 @@ Approved detail crops and thumbnails are the permanent visual artifacts. Full re
 - Approve or skip one sheet at a time; approval saves crops immediately and queues durable AI jobs.
 - Browse/search the local detail library by project, design team, discipline, CSI, tag, and free text.
 
+
+## API keys / `.env`
+
+You do **not** need an `.env` file for the current local stub AI tagger; approved crops and placeholder catalogue records still work without a key. For a real OpenAI-backed tagger, keep the key server-side and provide it as an environment variable. This repo now includes `.env.example`; copy it to `.env` for local use and set `OPENAI_API_KEY=...`. The app loads simple `.env` values at startup without overriding variables you already exported in the shell.
+
+```bash
+cp .env.example .env
+# edit .env and set OPENAI_API_KEY
+```
+
+The real `.env` file is ignored by git so secrets are not committed.
+
 ## AI provider seam
 
 `app/ai_tagging.py` defines an `AITaggingProvider` interface and a stub provider. A future provider can use the prepared prompt context (project name, design team, source PDF filename, page number, known discipline, and crop image path) and return structured metadata.

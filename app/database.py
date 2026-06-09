@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from .env import load_env_file
+
+load_env_file()
+
 import json
 import os
 import sqlite3
