@@ -8,13 +8,29 @@ from .database import connect, utc_now
 from .detector import detect_candidate_detail_boxes
 from .pdf_tools import render_pdf_page
 from .settings import get_settings
-from .storage import project_dir, update_page_failed, update_page_ready
+from .storage import process_all_pending_ai_jobs, project_dir, update_page_failed, update_page_ready
 
 _PROCESSOR = ThreadPoolExecutor(max_workers=int(os.getenv("DETAIL_PROCESSING_WORKERS", "1")))
 
 
 def enqueue_project_processing(project_id: str) -> None:
     _PROCESSOR.submit(process_project_pages, project_id)
+
+
+def recover_stalled_processing() -> None:
+    """Re-queue processing for projects left with pending/processing pages after a crash or restart."""
+    with connect() as conn:
+        conn.execute("UPDATE pages SET status='pending', updated_at=? WHERE status='processing'", (utc_now(),))
+        conn.execute("UPDATE ai_jobs SET status='pending', updated_at=? WHERE status='running'", (utc_now(),))
+        conn.execute("UPDATE details SET ai_status='pending', updated_at=? WHERE ai_status='running'", (utc_now(),))
+        project_ids = [
+            row["project_id"]
+            for row in conn.execute("SELECT DISTINCT project_id FROM pages WHERE status='pending'")
+        ]
+    for project_id in project_ids:
+        enqueue_project_processing(project_id)
+    if project_ids:
+        _PROCESSOR.submit(process_all_pending_ai_jobs)
 
 
 def process_project_pages(project_id: str) -> None:
