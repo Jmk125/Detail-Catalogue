@@ -541,12 +541,22 @@ async function loadNextReady(afterIndex) {
   loadPage();
 }
 
+let sheetOverlayShownAt = 0;
+const SHEET_OVERLAY_MIN_MS = 400;
+
 function showSheetLoadingOverlay() {
+  sheetOverlayShownAt = Date.now();
   $("sheetLoadingOverlay").classList.remove("hidden");
 }
 
 function hideSheetLoadingOverlay() {
-  $("sheetLoadingOverlay").classList.add("hidden");
+  const elapsed = Date.now() - sheetOverlayShownAt;
+  if (sheetOverlayShownAt && elapsed < SHEET_OVERLAY_MIN_MS) {
+    setTimeout(() => $("sheetLoadingOverlay").classList.add("hidden"), SHEET_OVERLAY_MIN_MS - elapsed);
+  } else {
+    $("sheetLoadingOverlay").classList.add("hidden");
+  }
+  sheetOverlayShownAt = 0;
 }
 
 function showProcessingNext(status = manifest?.processing_status) {
