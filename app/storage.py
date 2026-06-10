@@ -444,6 +444,48 @@ def process_pending_ai_jobs(limit: int = 20) -> int:
     return processed
 
 
+def queue_unscanned_details() -> int:
+    """Queue AI jobs for saved details whose AI tagging never completed."""
+    now = utc_now()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id FROM details
+            WHERE ai_status != 'complete'
+              AND id NOT IN (SELECT detail_id FROM ai_jobs WHERE status IN ('pending', 'running'))
+            """
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "INSERT INTO ai_jobs(id, detail_id, status, provider, created_at, updated_at) VALUES(?, ?, 'pending', 'stub', ?, ?)",
+                (uuid4().hex[:16], row["id"], now, now),
+            )
+    return len(rows)
+
+
+def ai_scan_status() -> dict[str, Any]:
+    with connect() as conn:
+        detail_counts = {r["ai_status"]: r["c"] for r in conn.execute("SELECT ai_status, COUNT(*) AS c FROM details GROUP BY ai_status")}
+        job_counts = {r["status"]: r["c"] for r in conn.execute("SELECT status, COUNT(*) AS c FROM ai_jobs GROUP BY status")}
+    return {
+        "details": detail_counts,
+        "jobs": job_counts,
+        "unscanned": sum(c for status, c in detail_counts.items() if status != "complete"),
+        "active": job_counts.get("pending", 0) + job_counts.get("running", 0),
+    }
+
+
+def process_all_pending_ai_jobs() -> int:
+    """Drain the AI job queue in batches until nothing is pending."""
+    total = 0
+    while True:
+        with connect() as conn:
+            remaining = conn.execute("SELECT COUNT(*) AS c FROM ai_jobs WHERE status='pending'").fetchone()["c"]
+        if not remaining:
+            return total
+        total += process_pending_ai_jobs()
+
+
 def detail_row_to_api(row: Any) -> dict[str, Any]:
     d = dict(row)
     d["crop_image"] = d.pop("crop_image_path")

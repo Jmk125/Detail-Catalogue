@@ -16,6 +16,7 @@ from .settings import get_settings
 from .storage import (
     add_page_record,
     add_source_file,
+    ai_scan_status,
     create_project_record,
     delete_detail,
     get_detail,
@@ -26,8 +27,10 @@ from .storage import (
     list_details,
     list_library_facets,
     make_project_zip,
+    process_all_pending_ai_jobs,
     process_pending_ai_jobs,
     project_dir,
+    queue_unscanned_details,
     redetect_page_boxes,
     rescan_detail,
     save_approved_crops,
@@ -175,6 +178,19 @@ def library_search(
 @app.get("/api/library/facets")
 def library_facets():
     return list_library_facets()
+
+
+@app.post("/api/library/scan-unscanned")
+def scan_unscanned(background_tasks: BackgroundTasks):
+    queued = queue_unscanned_details()
+    if queued:
+        background_tasks.add_task(process_all_pending_ai_jobs)
+    return {"queued": queued, "status": ai_scan_status()}
+
+
+@app.get("/api/library/scan-status")
+def scan_status():
+    return ai_scan_status()
 
 
 @app.get("/api/details/{detail_id}")

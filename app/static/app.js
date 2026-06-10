@@ -27,6 +27,7 @@ $("approveBtn").addEventListener("click", approveSheet);
 $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
+$("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
 $("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
@@ -676,8 +677,55 @@ function detailCard(d, compact = false) {
 
 function showNotePopup(d) {
   $("noteModalTitle").textContent = d.detail_title || "Untitled detail";
+  $("noteModalSubtitle").textContent = [d.project_name || "Unnamed project", d.discipline || ""].filter(Boolean).join(" — ");
   $("noteModalBody").textContent = d.notes || "";
   $("noteModal").classList.remove("hidden");
+}
+
+let scanPollTimer = null;
+
+function setScanStatus(text) {
+  const span = $("scanStatus");
+  span.textContent = text || "";
+  span.classList.toggle("hidden", !text);
+}
+
+async function scanUnscannedDetails() {
+  const btn = $("scanUnscannedBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/library/scan-unscanned", { method: "POST" });
+    if (!res.ok) { alert(await res.text()); return; }
+    const data = await res.json();
+    if (!data.queued && !data.status.active) {
+      setScanStatus("All details have already been scanned.");
+      setTimeout(() => { if (!scanPollTimer) setScanStatus(""); }, 5000);
+      return;
+    }
+    setScanStatus(`Queued ${data.queued} detail(s). AI scanning is running in the background...`);
+    startScanPolling();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function startScanPolling() {
+  if (scanPollTimer) clearInterval(scanPollTimer);
+  scanPollTimer = setInterval(async () => {
+    const res = await fetch("/api/library/scan-status");
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s.active > 0) {
+      setScanStatus(`AI scanning in background: ${s.active} job(s) remaining...`);
+    } else {
+      clearInterval(scanPollTimer);
+      scanPollTimer = null;
+      setScanStatus("Background AI scan finished. Library refreshed.");
+      setTimeout(() => { if (!scanPollTimer) setScanStatus(""); }, 6000);
+      await loadLibraryFacets();
+      await loadLibrary();
+    }
+  }, 2000);
 }
 
 async function toggleBookmark(detail) {

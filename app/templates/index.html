@@ -12,13 +12,13 @@
       <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
     </div>
     <nav class="tabs" aria-label="Primary">
-      <button id="processTabBtn" class="tab-btn active" data-tab="processTab">Process Drawings</button>
-      <button id="libraryTabBtn" class="tab-btn" data-tab="libraryTab">Detail Library</button>
+      <button id="libraryTabBtn" class="tab-btn active" data-tab="libraryTab">Detail Library</button>
+      <button id="processTabBtn" class="tab-btn" data-tab="processTab">Process Drawings</button>
     </nav>
   </header>
 
   <main>
-    <div id="processTab" class="tab-panel active">
+    <div id="processTab" class="tab-panel hidden">
     <section class="panel hero-panel">
       <h2>1. Upload Drawing Set</h2>
 
@@ -101,14 +101,16 @@
       </div>
     </section>
     </div>
-      <div id="libraryTab" class="tab-panel hidden">
+      <div id="libraryTab" class="tab-panel active">
       <section id="libraryPanel" class="panel library-panel">
       <div class="toolbar">
         <div>
-          <h2>3. Detail Library</h2>
+          <h2>Detail Library</h2>
           <span>Browse/search approved detail crops without keeping full sheet renders.</span>
+          <span id="scanStatus" class="scan-status hidden"></span>
         </div>
         <div class="buttons">
+          <button id="scanUnscannedBtn">Scan Untagged Details</button>
           <button id="gridToggleBtn">Grid/List</button>
           <button id="refreshLibraryBtn">Refresh Library</button>
         </div>
@@ -143,8 +145,16 @@
   <div id="noteModal" class="modal hidden">
     <div class="modal-card note-card">
       <button id="closeNoteBtn" class="modal-close">×</button>
-      <h3 id="noteModalTitle"></h3>
-      <p id="noteModalBody"></p>
+      <div class="note-card-header">
+        <span class="note-icon">📝</span>
+        <div class="note-card-titles">
+          <h3 id="noteModalTitle"></h3>
+          <small id="noteModalSubtitle"></small>
+        </div>
+      </div>
+      <div class="note-card-body">
+        <p id="noteModalBody"></p>
+      </div>
     </div>
   </div>
 

@@ -867,20 +867,103 @@ main {
 }
 
 .modal-card.note-card {
-  width: min(520px, 92vw);
-  padding: 20px 22px;
+  width: min(560px, 92vw);
+  padding: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  animation: notePop .16s ease-out;
 }
 
-.modal-card.note-card h3 {
-  margin: 0 24px 10px 0;
+@keyframes notePop {
+  from { transform: scale(.94) translateY(8px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+.note-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 56px 14px 20px;
+  background: linear-gradient(135deg, #0f172a, #1e3a8a);
+  color: white;
+}
+
+.note-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: rgba(251, 191, 36, .18);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .35);
+  font-size: 19px;
+}
+
+.note-card-titles { min-width: 0; }
+
+.note-card-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.25;
+  color: white;
+  overflow-wrap: anywhere;
+}
+
+.note-card-header small {
+  display: block;
+  margin-top: 2px;
+  color: #bfdbfe;
+}
+
+.note-card .modal-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .14);
+  color: white;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.note-card .modal-close:hover {
+  background: rgba(255, 255, 255, .26);
+  transform: none;
+  box-shadow: none;
+}
+
+.note-card-body {
+  padding: 18px 20px 20px;
+  background: white;
 }
 
 #noteModalBody {
   margin: 0;
+  padding: 14px 16px;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  background: #fffbeb;
   white-space: pre-wrap;
-  line-height: 1.5;
-  color: var(--text);
+  line-height: 1.55;
+  color: #422006;
+  max-height: 50vh;
+  overflow: auto;
 }
+
+.scan-status {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 5px 11px;
+  border: 1px solid #c8dcff;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1e3a8a;
+  font-size: 13px;
+}
+
+.scan-status.hidden { display: none; }
 
 @media (max-width: 1100px) {
   .detail-editor {
