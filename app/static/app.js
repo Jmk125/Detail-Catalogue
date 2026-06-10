@@ -44,7 +44,6 @@ function collectDesigners(containerId = "designerRows") {
   return designers;
 }
 
-$("uploadBtn").addEventListener("click", uploadPdf);
 $("prevBtn").addEventListener("click", () => changePage(-1));
 $("nextBtn").addEventListener("click", () => changePage(1));
 $("fitBtn").addEventListener("click", fitToView);
@@ -113,46 +112,129 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-let selectedFiles = [];
+let uploadEntries = [];
+let initProjectPromise = null;
 
 function addSelectedFiles(fileList) {
   for (const file of Array.from(fileList || [])) {
-    if (!selectedFiles.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) {
-      selectedFiles.push(file);
-    }
+    const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, file, progress: 0, status: "queued", xhr: null };
+    uploadEntries.push(entry);
+    renderSelectedFiles();
+    startFileUpload(entry);
   }
-  syncFileInput();
-  renderSelectedFiles();
+  fileInput.value = "";
 }
 
-function removeSelectedFile(index) {
-  selectedFiles.splice(index, 1);
-  syncFileInput();
+function removeSelectedFile(id) {
+  const entry = uploadEntries.find(e => e.id === id);
+  if (!entry) return;
+  if (entry.xhr && entry.status === "uploading") entry.xhr.abort();
+  uploadEntries = uploadEntries.filter(e => e.id !== id);
   renderSelectedFiles();
-}
-
-function syncFileInput() {
-  const dt = new DataTransfer();
-  for (const file of selectedFiles) dt.items.add(file);
-  fileInput.files = dt.files;
 }
 
 function renderSelectedFiles() {
   const container = $("selectedFiles");
-  if (!selectedFiles.length) {
-    container.innerHTML = "";
-    $("status").textContent = "";
-    return;
-  }
   container.innerHTML = "";
-  selectedFiles.forEach((file, i) => {
-    const item = document.createElement("span");
+  for (const entry of uploadEntries) {
+    const item = document.createElement("div");
     item.className = "selected-file";
-    item.innerHTML = `${escapeHtml(file.name)} <button type="button" data-index="${i}" aria-label="Remove">×</button>`;
-    item.querySelector("button").addEventListener("click", () => removeSelectedFile(i));
+    const statusLabel = entry.status === "error" ? (entry.error || "Failed")
+      : entry.status === "done" ? "Done"
+      : entry.status === "uploading" ? `${entry.progress}%`
+      : "Queued";
+    item.innerHTML = `
+      <span class="selected-file-name">${escapeHtml(entry.file.name)}</span>
+      <div class="selected-file-bar"><div class="selected-file-fill" style="width:${entry.progress}%"></div></div>
+      <span class="selected-file-status${entry.status === "error" ? " error" : ""}">${escapeHtml(statusLabel)}</span>
+      <button type="button" class="remove-file-btn" aria-label="Remove">×</button>
+    `;
+    item.querySelector(".remove-file-btn").addEventListener("click", () => removeSelectedFile(entry.id));
     container.appendChild(item);
-  });
-  $("status").textContent = `Selected ${selectedFiles.length} PDF(s).`;
+  }
+}
+
+async function ensureProject() {
+  if (projectId) return projectId;
+  if (!initProjectPromise) {
+    initProjectPromise = (async () => {
+      const form = new FormData();
+      form.append("project_name", $("projectName").value || "");
+      form.append("design_team", $("designTeam").value || "");
+      form.append("discipline", $("discipline").value || "unknown");
+      form.append("designers", JSON.stringify(collectDesigners()));
+      const res = await fetch("/api/projects/init", { method: "POST", body: form });
+      if (!res.ok) throw new Error(await res.text());
+      manifest = await res.json();
+      projectId = manifest.project_id;
+      pageIndex = 0;
+      $("reviewPanel").classList.remove("hidden");
+      renderProcessingStatus(manifest.processing_status);
+      startPolling();
+      await loadDesignTeams();
+      await loadLibraryFacets();
+      return projectId;
+    })();
+  }
+  return initProjectPromise;
+}
+
+function startFileUpload(entry) {
+  (async () => {
+    try {
+      await ensureProject();
+    } catch (err) {
+      entry.status = "error";
+      entry.error = "Could not start project";
+      renderSelectedFiles();
+      return;
+    }
+    if (!uploadEntries.includes(entry)) return;
+
+    entry.status = "uploading";
+    renderSelectedFiles();
+
+    const form = new FormData();
+    form.append("file", entry.file);
+
+    const xhr = new XMLHttpRequest();
+    entry.xhr = xhr;
+    xhr.open("POST", `/api/projects/${projectId}/sources`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        entry.progress = Math.round((e.loaded / e.total) * 100);
+        renderSelectedFiles();
+      }
+    };
+    xhr.onload = async () => {
+      if (!uploadEntries.includes(entry)) return;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        entry.progress = 100;
+        entry.status = "done";
+        const data = JSON.parse(xhr.responseText);
+        manifest.pages = data.pages;
+        manifest.source_files = data.source_files;
+        manifest.processing_status = data.processing_status;
+        renderProcessingStatus(data.processing_status);
+        if (!loadedPageId) await loadNextReady(-1);
+        await loadLibraryFacets();
+      } else {
+        entry.status = "error";
+        try { entry.error = JSON.parse(xhr.responseText).detail; } catch { entry.error = "Upload failed"; }
+      }
+      renderSelectedFiles();
+    };
+    xhr.onerror = () => {
+      if (!uploadEntries.includes(entry)) return;
+      entry.status = "error";
+      entry.error = "Upload failed";
+      renderSelectedFiles();
+    };
+    xhr.onabort = () => {
+      // removed by user; nothing to do
+    };
+    xhr.send(form);
+  })();
 }
 
 function debounce(fn, delay) {
@@ -187,44 +269,6 @@ async function loadDesignTeams() {
     firmOption.value = team.name;
     firmList.appendChild(firmOption);
   }
-}
-
-async function uploadPdf() {
-  const files = Array.from(fileInput.files || []);
-  if (!files.length) {
-    alert("Choose one or more PDFs first.");
-    return;
-  }
-
-  $("status").textContent = "Uploading PDFs and starting background page detection...";
-
-  const form = new FormData();
-  for (const file of files) form.append("files", file);
-  form.append("project_name", $("projectName").value || "");
-  form.append("design_team", $("designTeam").value || "");
-  form.append("discipline", $("discipline").value || "unknown");
-  form.append("designers", JSON.stringify(collectDesigners()));
-
-  const res = await fetch("/api/projects", { method: "POST", body: form });
-  if (!res.ok) {
-    $("status").textContent = "Upload failed.";
-    alert(await res.text());
-    return;
-  }
-
-  manifest = await res.json();
-  projectId = manifest.project_id;
-  pageIndex = 0;
-  selectedFiles = [];
-  syncFileInput();
-  renderSelectedFiles();
-  $("reviewPanel").classList.remove("hidden");
-  $("status").textContent = `Project created with ${manifest.pages.length} pages. Waiting for first ready sheet...`;
-  renderProcessingStatus(manifest.processing_status);
-  startPolling();
-  await loadNextReady(-1);
-  await loadDesignTeams();
-  await loadLibraryFacets();
 }
 
 function startPolling() {

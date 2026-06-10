@@ -16,6 +16,7 @@ from .processing import enqueue_project_processing
 from .settings import get_settings
 from .storage import (
     add_page_record,
+    add_pages_for_source,
     add_source_file,
     ai_scan_status,
     create_project_record,
@@ -102,6 +103,47 @@ async def create_project(
             add_page_record(project_id, source_id, global_index, source_page_index)
             global_index += 1
 
+    enqueue_project_processing(project_id)
+    return get_project_manifest(project_id)
+
+
+@app.post("/api/projects/init")
+async def init_project(
+    project_name: str = Form(""),
+    design_team: str = Form(""),
+    discipline: str = Form("unknown"),
+    designers: str = Form("[]"),
+):
+    try:
+        designer_list = json.loads(designers) if designers else []
+    except json.JSONDecodeError:
+        designer_list = []
+    project_id = uuid4().hex[:12]
+    create_project_record(project_id, project_name, design_team, discipline, get_settings(), designer_list)
+    return get_project_manifest(project_id)
+
+
+@app.post("/api/projects/{project_id}/sources")
+async def add_project_source(project_id: str, file: UploadFile = File(...)):
+    pdir = project_dir(project_id)
+    if not pdir.exists():
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail=f"Only PDF files are supported: {file.filename}")
+
+    source_id = uuid4().hex[:12]
+    safe_name = Path(file.filename or f"source_{source_id}.pdf").name
+    source_rel = f"sources/{source_id}_{safe_name}"
+    source_path = pdir / source_rel
+    with source_path.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    try:
+        page_count = count_pdf_pages(source_path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read {safe_name}: {exc}") from exc
+
+    add_source_file(project_id, source_id, safe_name, source_rel, page_count)
+    add_pages_for_source(project_id, source_id, page_count)
     enqueue_project_processing(project_id)
     return get_project_manifest(project_id)
 

@@ -109,6 +109,22 @@ def add_source_file(project_id: str, source_file_id: str, filename: str, storage
         )
 
 
+def add_pages_for_source(project_id: str, source_file_id: str, page_count: int) -> None:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT COALESCE(MAX(global_index), -1) AS m FROM pages WHERE project_id=?", (project_id,)).fetchone()
+        start = int(row["m"]) + 1
+        for i in range(page_count):
+            conn.execute(
+                """
+                INSERT INTO pages(project_id, source_file_id, global_index, source_page_index, page_number, status, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (project_id, source_file_id, start + i, i, i + 1, now, now),
+            )
+        conn.execute("UPDATE projects SET status='processing' WHERE id=?", (project_id,))
+
+
 def add_page_record(project_id: str, source_file_id: str, global_index: int, source_page_index: int) -> int:
     now = utc_now()
     with connect() as conn:
