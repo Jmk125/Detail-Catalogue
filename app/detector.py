@@ -1,6 +1,15 @@
 from pathlib import Path
+import importlib
+
 import numpy as np
 from PIL import Image, ImageFilter
+
+
+def _cv2():
+    try:
+        return importlib.import_module("cv2")
+    except Exception:
+        return None
 
 
 def _union(a, b):
@@ -141,6 +150,59 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
+def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
+    cv2 = _cv2()
+    if cv2 is None:
+        return None
+
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return []
+
+    height, width = img.shape[:2]
+    sheet_area = width * height
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    thresh = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
+    )
+
+    # Original, stronger OpenCV pass: close horizontal/vertical linework, include
+    # nearby title text, then dilate clusters into reviewable detail candidates.
+    kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (45, 3))
+    kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 45))
+    horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
+    vertical = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_y, iterations=1)
+    combined = cv2.bitwise_or(horizontal, vertical)
+
+    text_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (55, 12))
+    textish = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, text_kernel, iterations=1)
+    combined = cv2.bitwise_or(combined, textish)
+
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (24, 24))
+    combined = cv2.dilate(combined, dilate_kernel, iterations=2)
+
+    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+            continue
+        aspect = w / max(h, 1)
+        if aspect > 12 or aspect < 0.05:
+            continue
+        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
+            continue
+        boxes.append([x, y, w, h])
+
+    boxes = _merge_boxes(boxes, dx=18, dy=18)
+    boxes = _merge_labels_under_details(boxes, width, height)
+    boxes = _merge_boxes(boxes, dx=10, dy=10)
+    return _format_results(boxes, width, height, max_boxes)
+
+
 def _connected_components(mask: np.ndarray) -> list[list[int]]:
     height, width = mask.shape
     visited = np.zeros(mask.shape, dtype=bool)
@@ -229,4 +291,7 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
 
 
 def detect_candidate_detail_boxes(image_path: Path, max_boxes: int = 80) -> list[dict]:
+    cv2_result = _detect_with_cv2(image_path, max_boxes)
+    if cv2_result is not None:
+        return cv2_result
     return _detect_with_pillow_numpy(image_path, max_boxes)

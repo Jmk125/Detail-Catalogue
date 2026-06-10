@@ -9,6 +9,8 @@ let zoom = 1.0;
 let currentMergeTargetId = null;
 let pollTimer = null;
 let libraryGrid = true;
+let loadedPageId = null;
+let drawState = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,6 +56,7 @@ fileInput.addEventListener("change", setSelectedFileStatus);
 canvasWrap.addEventListener("wheel", onWheelZoom, { passive: false });
 canvasWrap.addEventListener("contextmenu", (e) => e.preventDefault());
 canvasWrap.addEventListener("mousedown", startPanMaybe);
+canvasWrap.addEventListener("mousedown", startDrawBoxMaybe);
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Delete" && selectedId) {
@@ -132,8 +135,11 @@ async function refreshProjectStatus() {
   manifest.processing_status = data.processing_status;
   renderProcessingStatus(data.processing_status);
 
-  const current = manifest.pages[pageIndex];
-  if (!current || current.status !== "ready" || !current.image) {
+  const current = manifest.pages.find(p => p.page_index === pageIndex) || manifest.pages[pageIndex];
+  const imageHasLoadedPage = loadedPageId && $("sheetImage").getAttribute("src");
+  if (current?.status === "ready" && current.image && (!imageHasLoadedPage || loadedPageId !== current.id)) {
+    loadPage();
+  } else if (!current || current.status !== "ready" || !current.image) {
     const ready = data.pages.find(p => p.status === "ready");
     if (ready) {
       pageIndex = ready.page_index;
@@ -174,6 +180,7 @@ async function loadNextReady(afterIndex) {
 }
 
 function showProcessingNext() {
+  loadedPageId = null;
   $("sheetInfo").textContent = "Processing next sheet...";
   $("sheetImage").removeAttribute("src");
   $("boxLayer").innerHTML = "";
@@ -190,13 +197,19 @@ function loadPage() {
   currentMergeTargetId = null;
 
   const img = $("sheetImage");
+  loadedPageId = null;
   img.onload = () => {
+    loadedPageId = page.id;
     $("boxLayer").style.width = `${img.naturalWidth}px`;
     $("boxLayer").style.height = `${img.naturalHeight}px`;
     $("sheetStage").style.width = `${img.naturalWidth}px`;
     $("sheetStage").style.height = `${img.naturalHeight}px`;
     fitToView();
     renderBoxes();
+  };
+  img.onerror = () => {
+    loadedPageId = null;
+    $("sheetInfo").textContent = "Sheet image is not ready yet. Retrying as processing continues...";
   };
 
   img.src = `/data/projects/${projectId}/${page.image}?t=${Date.now()}`;
@@ -273,6 +286,80 @@ function startPanMaybe(e) {
 }
 function onPan(e) { if (!panState) return; canvasWrap.scrollLeft = panState.scrollLeft - (e.clientX - panState.startX); canvasWrap.scrollTop = panState.scrollTop - (e.clientY - panState.startY); }
 function stopPan() { panState = null; canvasWrap.classList.remove("panning"); document.removeEventListener("mousemove", onPan); document.removeEventListener("mouseup", stopPan); }
+
+
+function imagePointFromClient(clientX, clientY, clamp = true) {
+  const wrap = $("canvasWrap");
+  const img = $("sheetImage");
+  if (!img.naturalWidth || !img.naturalHeight) return null;
+  const rect = wrap.getBoundingClientRect();
+  const margin = stageMarginPx();
+  const x = (clientX - rect.left + wrap.scrollLeft - margin) / zoom;
+  const y = (clientY - rect.top + wrap.scrollTop - margin) / zoom;
+  if (!clamp && (x < 0 || y < 0 || x > img.naturalWidth || y > img.naturalHeight)) return null;
+  return {
+    x: Math.max(0, Math.min(img.naturalWidth, x)),
+    y: Math.max(0, Math.min(img.naturalHeight, y)),
+  };
+}
+
+function startDrawBoxMaybe(e) {
+  if (e.button !== 0) return;
+  if (!loadedPageId || e.target.closest(".crop-box")) return;
+
+  const start = imagePointFromClient(e.clientX, e.clientY, false);
+  if (!start) return;
+  e.preventDefault();
+
+  const id = `user_${Date.now()}`;
+  const box = { id, x: start.x, y: start.y, w: 1, h: 1, confidence: 1.0, source: "user" };
+  boxes.push(box);
+  selectedId = id;
+  drawState = { id, startX: start.x, startY: start.y, moved: false };
+
+  document.addEventListener("mousemove", onDrawBox);
+  document.addEventListener("mouseup", stopDrawBox);
+  renderBoxes();
+  renderBoxList();
+}
+
+function onDrawBox(e) {
+  if (!drawState) return;
+  const point = imagePointFromClient(e.clientX, e.clientY);
+  const box = boxes.find(b => b.id === drawState.id);
+  if (!point || !box) return;
+
+  const x0 = Math.min(drawState.startX, point.x);
+  const y0 = Math.min(drawState.startY, point.y);
+  const x1 = Math.max(drawState.startX, point.x);
+  const y1 = Math.max(drawState.startY, point.y);
+  box.x = x0;
+  box.y = y0;
+  box.w = Math.max(1, x1 - x0);
+  box.h = Math.max(1, y1 - y0);
+  drawState.moved = box.w >= 4 || box.h >= 4;
+  renderBoxes();
+  renderBoxList();
+}
+
+function stopDrawBox() {
+  if (!drawState) return;
+  const box = boxes.find(b => b.id === drawState.id);
+  const minSize = 20;
+  if (!box || !drawState.moved || box.w < minSize || box.h < minSize) {
+    boxes = boxes.filter(b => b.id !== drawState.id);
+    selectedId = null;
+  } else {
+    box.w = Math.max(minSize, box.w);
+    box.h = Math.max(minSize, box.h);
+    applyOverlapMerge(box.id);
+  }
+  drawState = null;
+  document.removeEventListener("mousemove", onDrawBox);
+  document.removeEventListener("mouseup", stopDrawBox);
+  renderBoxes();
+  renderBoxList();
+}
 
 function getResizeModeFromMouseEvent(e, boxElement) {
   const rect = boxElement.getBoundingClientRect();
