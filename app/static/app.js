@@ -113,22 +113,19 @@ document.addEventListener("keydown", (e) => {
 });
 
 let uploadEntries = [];
-let initProjectPromise = null;
+
+$("uploadBtn").addEventListener("click", uploadFiles);
 
 function addSelectedFiles(fileList) {
   for (const file of Array.from(fileList || [])) {
-    const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, file, progress: 0, status: "queued", xhr: null };
+    const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, file, progress: 0, status: "queued" };
     uploadEntries.push(entry);
-    renderSelectedFiles();
-    startFileUpload(entry);
   }
+  renderSelectedFiles();
   fileInput.value = "";
 }
 
 function removeSelectedFile(id) {
-  const entry = uploadEntries.find(e => e.id === id);
-  if (!entry) return;
-  if (entry.xhr && entry.status === "uploading") entry.xhr.abort();
   uploadEntries = uploadEntries.filter(e => e.id !== id);
   renderSelectedFiles();
 }
@@ -154,87 +151,59 @@ function renderSelectedFiles() {
   }
 }
 
-async function ensureProject() {
-  if (projectId) return projectId;
-  if (!initProjectPromise) {
-    initProjectPromise = (async () => {
-      const form = new FormData();
-      form.append("project_name", $("projectName").value || "");
-      form.append("design_team", $("designTeam").value || "");
-      form.append("discipline", $("discipline").value || "unknown");
-      form.append("designers", JSON.stringify(collectDesigners()));
-      const res = await fetch("/api/projects/init", { method: "POST", body: form });
-      if (!res.ok) throw new Error(await res.text());
-      manifest = await res.json();
+function uploadFiles() {
+  if (!uploadEntries.length) {
+    alert("Choose one or more PDFs first.");
+    return;
+  }
+  const btn = $("uploadBtn");
+  btn.disabled = true;
+
+  const form = new FormData();
+  for (const entry of uploadEntries) form.append("files", entry.file);
+  form.append("project_name", $("projectName").value || "");
+  form.append("design_team", $("designTeam").value || "");
+  form.append("discipline", $("discipline").value || "unknown");
+  form.append("designers", JSON.stringify(collectDesigners()));
+
+  for (const entry of uploadEntries) entry.status = "uploading";
+  renderSelectedFiles();
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/projects");
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    for (const entry of uploadEntries) entry.progress = pct;
+    renderSelectedFiles();
+  };
+  xhr.onload = async () => {
+    btn.disabled = false;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      for (const entry of uploadEntries) { entry.progress = 100; entry.status = "done"; }
+      renderSelectedFiles();
+      manifest = JSON.parse(xhr.responseText);
       projectId = manifest.project_id;
       pageIndex = 0;
       $("reviewPanel").classList.remove("hidden");
       renderProcessingStatus(manifest.processing_status);
       startPolling();
+      await loadNextReady(-1);
       await loadDesignTeams();
       await loadLibraryFacets();
-      return projectId;
-    })();
-  }
-  return initProjectPromise;
-}
-
-function startFileUpload(entry) {
-  (async () => {
-    try {
-      await ensureProject();
-    } catch (err) {
-      entry.status = "error";
-      entry.error = "Could not start project";
+    } else {
+      let detail = "Upload failed";
+      try { detail = JSON.parse(xhr.responseText).detail; } catch {}
+      for (const entry of uploadEntries) { entry.status = "error"; entry.error = detail; }
       renderSelectedFiles();
-      return;
     }
-    if (!uploadEntries.includes(entry)) return;
-
-    entry.status = "uploading";
+  };
+  xhr.onerror = () => {
+    btn.disabled = false;
+    for (const entry of uploadEntries) { entry.status = "error"; entry.error = "Upload failed"; }
     renderSelectedFiles();
-
-    const form = new FormData();
-    form.append("file", entry.file);
-
-    const xhr = new XMLHttpRequest();
-    entry.xhr = xhr;
-    xhr.open("POST", `/api/projects/${projectId}/sources`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        entry.progress = Math.round((e.loaded / e.total) * 100);
-        renderSelectedFiles();
-      }
-    };
-    xhr.onload = async () => {
-      if (!uploadEntries.includes(entry)) return;
-      if (xhr.status >= 200 && xhr.status < 300) {
-        entry.progress = 100;
-        entry.status = "done";
-        const data = JSON.parse(xhr.responseText);
-        manifest.pages = data.pages;
-        manifest.source_files = data.source_files;
-        manifest.processing_status = data.processing_status;
-        renderProcessingStatus(data.processing_status);
-        if (!loadedPageId) await loadNextReady(-1);
-        await loadLibraryFacets();
-      } else {
-        entry.status = "error";
-        try { entry.error = JSON.parse(xhr.responseText).detail; } catch { entry.error = "Upload failed"; }
-      }
-      renderSelectedFiles();
-    };
-    xhr.onerror = () => {
-      if (!uploadEntries.includes(entry)) return;
-      entry.status = "error";
-      entry.error = "Upload failed";
-      renderSelectedFiles();
-    };
-    xhr.onabort = () => {
-      // removed by user; nothing to do
-    };
-    xhr.send(form);
-  })();
+  };
+  xhr.send(form);
 }
 
 function debounce(fn, delay) {
