@@ -542,6 +542,7 @@ function deleteSelected() {
   renderBoxes();
   renderBoxList();
 }
+function deleteSelected() { if (!selectedId) return; boxes = boxes.filter(b => b.id !== selectedId); selectedId = null; currentMergeTargetId = null; renderBoxes(); renderBoxList(); }
 
 async function approveSheet() {
   if (!projectId) return;
