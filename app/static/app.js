@@ -99,6 +99,12 @@ dropZone.addEventListener("drop", (e) => {
   }
 });
 fileInput.addEventListener("change", () => addSelectedFiles(fileInput.files));
+for (const id of ["projectName", "designTeam"]) {
+  $(id).addEventListener("input", () => {
+    $(id).classList.toggle("input-error", !$(id).value.trim());
+    updateUploadButtonState();
+  });
+}
 
 canvasWrap.addEventListener("wheel", onWheelZoom, { passive: false });
 canvasWrap.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -116,10 +122,15 @@ let uploadEntries = [];
 let uploadQueueRunning = false;
 let projectCreatePromise = null;
 let processingStarted = false;
+let backgroundStatusTimer = null;
 
 $("uploadBtn").addEventListener("click", processUploadedFiles);
 
 function addSelectedFiles(fileList) {
+  if (!validateUploadMetadata()) {
+    fileInput.value = "";
+    return;
+  }
   if (processingStarted) {
     alert("This drawing set is already processing. Finish this review before starting another upload batch.");
     fileInput.value = "";
@@ -178,7 +189,8 @@ function updateUploadButtonState() {
   const busyUploading = uploadQueueRunning || uploadEntries.some(e => e.status === "uploading");
   const hasErrors = uploadEntries.some(e => e.status === "error");
   const allUploaded = hasFiles && uploadEntries.every(e => e.status === "done");
-  btn.disabled = processingStarted || busyUploading || !allUploaded || hasErrors;
+  const hasRequiredMetadata = Boolean($("projectName").value.trim() && $("designTeam").value.trim());
+  btn.disabled = processingStarted || busyUploading || !allUploaded || hasErrors || !hasRequiredMetadata;
   if (processingStarted) {
     btn.textContent = "Processing...";
   } else if (busyUploading) {
@@ -252,6 +264,7 @@ async function ensureUploadProject() {
 
 async function processUploadedFiles() {
   if (processingStarted) return;
+  if (!validateUploadMetadata()) return;
   if (!uploadEntries.length) {
     alert("Choose one or more PDFs first.");
     return;
@@ -291,6 +304,18 @@ async function processUploadedFiles() {
   } finally {
     updateUploadButtonState();
   }
+}
+
+function validateUploadMetadata() {
+  const required = [$("projectName"), $("designTeam")];
+  for (const input of required) input.classList.toggle("input-error", !input.value.trim());
+  const missing = required.filter(input => !input.value.trim());
+  if (missing.length) {
+    missing[0].focus();
+    alert("Project Name and Design Team / Architect are required before uploading drawings.");
+    return false;
+  }
+  return true;
 }
 
 async function createEmptyProject() {
@@ -369,6 +394,56 @@ function resetReviewWorkspace() {
   $("boxList").innerHTML = "";
   $("detailsList").innerHTML = "";
   $("sheetInfo").textContent = "";
+}
+
+updateUploadButtonState();
+startBackgroundStatusPolling();
+
+function startBackgroundStatusPolling() {
+  if (backgroundStatusTimer) clearInterval(backgroundStatusTimer);
+  refreshBackgroundStatus();
+  backgroundStatusTimer = setInterval(refreshBackgroundStatus, 2500);
+}
+
+async function refreshBackgroundStatus() {
+  const localUploading = uploadEntries.filter(e => e.status === "queued" || e.status === "uploading").length;
+  const localProcessing = uploadEntries.filter(e => e.status === "processing").length;
+  let status = null;
+  try {
+    const res = await fetch("/api/background-status");
+    if (res.ok) status = await res.json();
+  } catch {}
+  renderBackgroundBar(status, localUploading, localProcessing);
+}
+
+function renderBackgroundBar(status, localUploading = 0, localProcessing = 0) {
+  const bar = $("backgroundBar");
+  if (!bar) return;
+  const activePages = status?.active_pages || 0;
+  const pages = status?.pages || {};
+  const ai = status?.ai_jobs || {};
+  const activeAi = status?.active_ai_jobs || 0;
+  const hasWork = localUploading > 0 || localProcessing > 0 || activePages > 0 || activeAi > 0;
+  bar.classList.toggle("hidden", !hasWork);
+  if (!hasWork) return;
+
+  const parts = [];
+  if (localUploading) parts.push(`${localUploading} file(s) uploading`);
+  if (activePages) parts.push(`${activePages} sheet(s) rendering/detecting boxes`);
+  if (activeAi) parts.push(`${activeAi} AI tagging job(s) pending/running`);
+  if (localProcessing && !activePages) parts.push("starting sheet processing");
+  $("backgroundBarText").textContent = parts.join(" • ");
+
+  const completedPages = (pages.ready || 0) + (pages.approved || 0) + (pages.skipped || 0) + (pages.failed || 0);
+  const totalPages = completedPages + activePages;
+  const completedAi = ai.complete || 0;
+  const totalAi = completedAi + activeAi + (ai.failed || 0);
+  const uploadDone = uploadEntries.filter(e => e.status === "done" || e.status === "processing").length;
+  const uploadTotal = uploadEntries.length;
+  const done = completedPages + completedAi + uploadDone;
+  const total = totalPages + totalAi + uploadTotal;
+  const pct = total ? Math.max(4, Math.min(100, Math.round((done / total) * 100))) : 12;
+  $("backgroundBarFill").style.width = `${pct}%`;
 }
 
 function debounce(fn, delay) {

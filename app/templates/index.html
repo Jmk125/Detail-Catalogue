@@ -25,11 +25,11 @@
       <div class="meta-grid">
         <label>
           Project Name
-          <input id="projectName" type="text" placeholder="Example: North Ridgeville HS" />
+          <input id="projectName" type="text" placeholder="Example: North Ridgeville HS" required />
         </label>
         <label>
           Design Team / Architect
-          <input id="designTeam" type="text" list="designTeamOptions" placeholder="Example: GPD Group / ThenDesign / etc." />
+          <input id="designTeam" type="text" list="designTeamOptions" placeholder="Example: GPD Group / ThenDesign / etc." required />
           <datalist id="designTeamOptions"></datalist>
         </label>
         <label>
@@ -168,6 +168,14 @@
         <p id="noteModalBody"></p>
       </div>
     </div>
+  </div>
+
+  <div id="backgroundBar" class="background-bar hidden" role="status" aria-live="polite">
+    <div class="background-bar-main">
+      <strong id="backgroundBarTitle">Background work</strong>
+      <span id="backgroundBarText"></span>
+    </div>
+    <div class="background-progress"><div id="backgroundBarFill" class="background-progress-fill"></div></div>
   </div>
 
   <script src="/static/app.js"></script>

@@ -19,6 +19,7 @@ from .storage import (
     add_pages_for_source,
     add_source_file,
     ai_scan_status,
+    background_activity_status,
     create_project_record,
     delete_detail,
     get_detail,
@@ -60,6 +61,11 @@ def settings():
 @app.get("/api/design-teams")
 def design_teams(q: str = ""):
     return {"design_teams": list_design_teams(q)}
+
+
+@app.get("/api/background-status")
+def background_status():
+    return background_activity_status()
 
 
 @app.post("/api/projects")

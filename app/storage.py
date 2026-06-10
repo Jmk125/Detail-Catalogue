@@ -22,26 +22,37 @@ def rel_url_path(path: Path, project_id: str) -> str:
     return path.relative_to(project_dir(project_id)).as_posix()
 
 
-def get_or_create_design_team(name: str | None) -> int | None:
+def _get_or_create_design_team_id(conn, name: str | None) -> int | None:
     clean = (name or "").strip()
     if not clean:
         return None
     now = utc_now()
+    row = conn.execute("SELECT id FROM design_teams WHERE lower(name)=lower(?)", (clean,)).fetchone()
+    if row:
+        conn.execute("UPDATE design_teams SET last_used_at=? WHERE id=?", (now, row["id"]))
+        return int(row["id"])
+    cur = conn.execute(
+        "INSERT INTO design_teams(name, created_at, last_used_at) VALUES(?, ?, ?)",
+        (clean, now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def get_or_create_design_team(name: str | None) -> int | None:
     with connect() as conn:
-        row = conn.execute("SELECT id FROM design_teams WHERE lower(name)=lower(?)", (clean,)).fetchone()
-        if row:
-            conn.execute("UPDATE design_teams SET last_used_at=? WHERE id=?", (now, row["id"]))
-            return int(row["id"])
-        cur = conn.execute(
-            "INSERT INTO design_teams(name, created_at, last_used_at) VALUES(?, ?, ?)",
-            (clean, now, now),
-        )
-        return int(cur.lastrowid)
+        return _get_or_create_design_team_id(conn, name)
+
+
+def _register_project_designer_firms(conn) -> None:
+    rows = conn.execute("SELECT DISTINCT firm_name FROM project_designers WHERE trim(firm_name) != ''").fetchall()
+    for row in rows:
+        _get_or_create_design_team_id(conn, row["firm_name"])
 
 
 def list_design_teams(q: str = "") -> list[dict[str, Any]]:
     like = f"%{q.strip()}%"
     with connect() as conn:
+        _register_project_designer_firms(conn)
         rows = conn.execute(
             """
             SELECT id, name, created_at, last_used_at
@@ -83,6 +94,7 @@ def set_project_designers(project_id: str, designers: list[dict[str, str]]) -> N
             firm_name = (d.get("firm_name") or "").strip()
             if not discipline or not firm_name:
                 continue
+            _get_or_create_design_team_id(conn, firm_name)
             conn.execute(
                 "INSERT OR REPLACE INTO project_designers(project_id, discipline, firm_name) VALUES(?, ?, ?)",
                 (project_id, discipline, firm_name),
@@ -606,8 +618,18 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
     if filters.get("design_teams"):
         team_ids = [t.strip() for t in filters["design_teams"].split(",") if t.strip()]
         if team_ids:
-            clauses.append(f"projects.design_team_id IN ({','.join(['?'] * len(team_ids))})")
+            with connect() as team_conn:
+                team_rows = team_conn.execute(
+                    f"SELECT name FROM design_teams WHERE id IN ({','.join(['?'] * len(team_ids))})",
+                    team_ids,
+                ).fetchall()
+            team_names = [r["name"] for r in team_rows]
+            team_clause = [f"projects.design_team_id IN ({','.join(['?'] * len(team_ids))})"]
             params.extend(team_ids)
+            if team_names:
+                team_clause.append(f"EXISTS (SELECT 1 FROM project_designers pd WHERE pd.project_id=projects.id AND pd.firm_name IN ({','.join(['?'] * len(team_names))}))")
+                params.extend(team_names)
+            clauses.append(f"({' OR '.join(team_clause)})")
     if filters.get("discipline"):
         clauses.append("details.discipline=?"); params.append(filters["discipline"])
     if filters.get("disciplines"):
@@ -789,12 +811,46 @@ def rescan_detail(detail_id: str) -> dict[str, Any] | None:
 
 def list_library_facets() -> dict[str, Any]:
     with connect() as conn:
+        _register_project_designer_firms(conn)
         return {
             "projects": [dict(r) for r in conn.execute("SELECT id, project_name FROM projects ORDER BY upload_date DESC LIMIT 100")],
             "design_teams": [dict(r) for r in conn.execute("SELECT id, name FROM design_teams ORDER BY name")],
             "disciplines": [r["discipline"] for r in conn.execute("SELECT DISTINCT discipline FROM details WHERE discipline IS NOT NULL ORDER BY discipline")],
             "tags": [r["name"] for r in conn.execute("SELECT name FROM tags ORDER BY name LIMIT 200")],
         }
+
+
+def background_activity_status() -> dict[str, Any]:
+    with connect() as conn:
+        pages = {"pending": 0, "processing": 0, "ready": 0, "failed": 0}
+        for row in conn.execute("SELECT status, COUNT(*) AS c FROM pages GROUP BY status"):
+            pages[row["status"]] = row["c"]
+        ai = {"pending": 0, "running": 0, "complete": 0, "failed": 0}
+        for row in conn.execute("SELECT status, COUNT(*) AS c FROM ai_jobs GROUP BY status"):
+            ai[row["status"]] = row["c"]
+        active_projects = [
+            dict(r)
+            for r in conn.execute(
+                """
+                SELECT projects.id, projects.project_name, COUNT(pages.id) AS active_pages
+                FROM projects JOIN pages ON pages.project_id=projects.id
+                WHERE pages.status IN ('pending', 'processing')
+                GROUP BY projects.id
+                ORDER BY projects.upload_date DESC
+                LIMIT 5
+                """
+            )
+        ]
+    active_pages = pages.get("pending", 0) + pages.get("processing", 0)
+    active_ai = ai.get("pending", 0) + ai.get("running", 0)
+    return {
+        "pages": pages,
+        "ai_jobs": ai,
+        "active_pages": active_pages,
+        "active_ai_jobs": active_ai,
+        "active": active_pages + active_ai > 0,
+        "projects": active_projects,
+    }
 
 
 def make_project_zip(project_id: str) -> Path:
