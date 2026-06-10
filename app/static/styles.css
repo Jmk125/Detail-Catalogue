@@ -196,22 +196,54 @@ button:hover { background: #eee; }
 
 .selected-files {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   margin-top: 8px;
 }
 
 .selected-file {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   background: #eef2f7;
   border-radius: 4px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   font-size: 13px;
 }
 
-.selected-file button {
+.selected-file-name {
+  flex: 0 0 auto;
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-file-bar {
+  flex: 1;
+  height: 8px;
+  background: #d8dee8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.selected-file-fill {
+  height: 100%;
+  background: #0099ff;
+  transition: width 0.2s ease;
+}
+
+.selected-file-status {
+  flex: 0 0 auto;
+  min-width: 50px;
+  text-align: right;
+}
+
+.selected-file-status.error {
+  color: #cc0000;
+}
+
+.remove-file-btn {
   border: none;
   background: none;
   cursor: pointer;
