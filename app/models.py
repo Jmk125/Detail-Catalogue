@@ -43,3 +43,4 @@ class DetailUpdateRequest(BaseModel):
     assembly_system_type: Optional[str] = None
     confidence_score: Optional[float] = None
     bookmarked: Optional[bool] = None
+    notes: Optional[str] = None

@@ -486,8 +486,8 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         clauses.append("details.csi_divisions_json LIKE ?"); params.append(f"%{filters['csi']}%")
     if filters.get("q"):
         q = f"%{filters['q']}%"
-        clauses.append("(details.detail_title LIKE ? OR details.summary LIKE ? OR details.searchable_description LIKE ? OR details.detail_number LIKE ? OR details.sheet_number LIKE ?)")
-        params.extend([q, q, q, q, q])
+        clauses.append("(details.detail_title LIKE ? OR details.summary LIKE ? OR details.searchable_description LIKE ? OR details.detail_number LIKE ? OR details.sheet_number LIKE ? OR details.notes LIKE ?)")
+        params.extend([q, q, q, q, q, q])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
         rows = conn.execute(
@@ -546,6 +546,7 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         "assembly_system_type",
         "confidence_score",
         "bookmarked",
+        "notes",
     }
     detail_assignments = []
     detail_params = []

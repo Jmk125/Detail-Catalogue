@@ -29,6 +29,8 @@ $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
+$("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
+$("noteModal").addEventListener("click", (e) => { if (e.target === $("noteModal")) $("noteModal").classList.add("hidden"); });
 for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
@@ -651,8 +653,10 @@ function detailCard(d, compact = false) {
   const card = document.createElement("div");
   card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "");
   const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+  const hasNote = Boolean((d.notes || "").trim());
+  const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
   card.innerHTML = `
-    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button></div>
+    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}</div>
     <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
     <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
     <small>${escapeHtml(d.discipline || "unknown")}</small>
@@ -661,8 +665,19 @@ function detailCard(d, compact = false) {
     e.stopPropagation();
     await toggleBookmark(d);
   });
+  const noteBtn = card.querySelector(".note-badge");
+  if (noteBtn) noteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    showNotePopup(d);
+  });
   card.addEventListener("click", () => openDetail(d.id));
   return card;
+}
+
+function showNotePopup(d) {
+  $("noteModalTitle").textContent = d.detail_title || "Untitled detail";
+  $("noteModalBody").textContent = d.notes || "";
+  $("noteModal").classList.remove("hidden");
 }
 
 async function toggleBookmark(detail) {
@@ -736,21 +751,32 @@ async function openDetail(id) {
   const res = await fetch(`/api/details/${id}`);
   if (!res.ok) return;
   const d = await res.json();
-  renderDetailEditor(d);
   $("detailModal").classList.remove("hidden");
+  renderDetailEditor(d);
 }
 
 function renderDetailEditor(d) {
   $("detailView").innerHTML = `
     <div class="detail-editor">
       <div class="detail-preview">
-        <img class="detail-large" src="/data/projects/${d.project_id}/${d.crop_image}" alt="Approved detail crop" />
-        <div class="detail-meta-card">
-          <strong>${escapeHtml(d.project_name || "Unnamed project")}</strong>
-          <span>${escapeHtml(d.design_team || "No design team")}</span>
-          <span>${escapeHtml(d.source_filename || "PDF")}, page ${d.page_number || "?"}</span>
-          <span>AI: ${escapeHtml(d.ai_status || "pending")}</span>
+        <div class="viewer-toolbar">
+          <div class="detail-meta-line">
+            <strong>${escapeHtml(d.project_name || "Unnamed project")}</strong>
+            <span>${escapeHtml(d.design_team || "No design team")}</span>
+            <span>${escapeHtml(d.source_filename || "PDF")}, page ${d.page_number || "?"}</span>
+            <span>AI: ${escapeHtml(d.ai_status || "pending")}</span>
+          </div>
+          <div class="buttons">
+            <button type="button" id="detailFitBtn">Fit</button>
+            <button type="button" id="detailActualBtn">100%</button>
+          </div>
         </div>
+        <div id="detailViewerWrap" class="detail-viewer">
+          <div id="detailViewerStage" class="detail-viewer-stage">
+            <img id="detailViewerImage" src="/data/projects/${d.project_id}/${d.crop_image}" alt="Approved detail crop" draggable="false" />
+          </div>
+        </div>
+        <p class="hint viewer-hint">Wheel = zoom. Drag (left or right button) = pan.</p>
       </div>
       <form id="detailEditForm" class="detail-form">
         <div class="form-header">
@@ -773,6 +799,7 @@ function renderDetailEditor(d) {
         </label>
         <label>Tags<input id="editTags" type="text" value="${escapeAttr((d.tags || []).join(", "))}" placeholder="comma, separated, tags" /></label>
         <label>CSI Divisions<input id="editCsi" type="text" value="${escapeAttr((d.csi_divisions || []).join(", "))}" placeholder="comma, separated CSI divisions" /></label>
+        <label>Notes<textarea id="editNotes" rows="4" placeholder="Personal notes, e.g. this was a pain to build...">${escapeHtml(d.notes || "")}</textarea></label>
         <label>AI Summary / Description<textarea id="editSummary" rows="5">${escapeHtml(d.summary || "")}</textarea></label>
         <label>Searchable Description<textarea id="editDescription" rows="5">${escapeHtml(d.searchable_description || "")}</textarea></label>
         <label>Assembly/System Type<input id="editAssembly" type="text" value="${escapeAttr(d.assembly_system_type || "")}" /></label>
@@ -792,6 +819,85 @@ function renderDetailEditor(d) {
   });
   $("deleteDetailBtn").addEventListener("click", async () => deleteDetailFromEditor(d.id));
   $("rescanDetailBtn").addEventListener("click", async () => rescanDetailFromEditor(d));
+  setupDetailViewer();
+}
+
+let detailZoom = 1.0;
+
+function detailViewerStageMargin() {
+  const s = window.getComputedStyle($("detailViewerStage"));
+  return parseFloat(s.marginLeft || "0") || 0;
+}
+
+function setDetailZoom(z, anchorClientX = null, anchorClientY = null) {
+  const wrap = $("detailViewerWrap");
+  const stage = $("detailViewerStage");
+  const img = $("detailViewerImage");
+  if (!wrap || !img || !img.naturalWidth) return;
+  const oldZoom = detailZoom;
+  detailZoom = Math.max(0.05, Math.min(8.0, z));
+  const margin = detailViewerStageMargin();
+  const apply = () => {
+    stage.style.transform = `scale(${detailZoom})`;
+    stage.style.width = `${img.naturalWidth * detailZoom}px`;
+    stage.style.height = `${img.naturalHeight * detailZoom}px`;
+  };
+  if (anchorClientX !== null && anchorClientY !== null) {
+    const rect = wrap.getBoundingClientRect();
+    const imageX = (anchorClientX - rect.left + wrap.scrollLeft - margin) / oldZoom;
+    const imageY = (anchorClientY - rect.top + wrap.scrollTop - margin) / oldZoom;
+    apply();
+    wrap.scrollLeft = imageX * detailZoom + margin - (anchorClientX - rect.left);
+    wrap.scrollTop = imageY * detailZoom + margin - (anchorClientY - rect.top);
+  } else {
+    apply();
+  }
+}
+
+function fitDetailToView() {
+  const wrap = $("detailViewerWrap");
+  const img = $("detailViewerImage");
+  if (!wrap || !img || !img.naturalWidth) return;
+  const fitX = (wrap.clientWidth - 30) / img.naturalWidth;
+  const fitY = (wrap.clientHeight - 30) / img.naturalHeight;
+  setDetailZoom(Math.min(fitX, fitY));
+  const margin = detailViewerStageMargin();
+  wrap.scrollLeft = Math.max(0, margin - (wrap.clientWidth - img.naturalWidth * detailZoom) / 2);
+  wrap.scrollTop = Math.max(0, margin - (wrap.clientHeight - img.naturalHeight * detailZoom) / 2);
+}
+
+function setupDetailViewer() {
+  const wrap = $("detailViewerWrap");
+  const img = $("detailViewerImage");
+  if (!wrap || !img) return;
+
+  if (img.complete && img.naturalWidth) fitDetailToView();
+  else img.onload = fitDetailToView;
+
+  $("detailFitBtn").addEventListener("click", fitDetailToView);
+  $("detailActualBtn").addEventListener("click", () => setDetailZoom(1.0));
+  wrap.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    setDetailZoom(detailZoom * (e.deltaY > 0 ? 0.88 : 1.12), e.clientX, e.clientY);
+  }, { passive: false });
+  wrap.addEventListener("contextmenu", (e) => e.preventDefault());
+  wrap.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 && e.button !== 2) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY, left: wrap.scrollLeft, top: wrap.scrollTop };
+    const onMove = (ev) => {
+      wrap.scrollLeft = start.left - (ev.clientX - start.x);
+      wrap.scrollTop = start.top - (ev.clientY - start.y);
+    };
+    const onUp = () => {
+      wrap.classList.remove("panning");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    wrap.classList.add("panning");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
 }
 
 function disciplineOptions(selected) {
@@ -812,6 +918,7 @@ async function saveDetailEdits(id) {
     summary: $("editSummary").value.trim() || null,
     searchable_description: $("editDescription").value.trim() || null,
     assembly_system_type: $("editAssembly").value.trim() || null,
+    notes: $("editNotes").value.trim() || null,
     bookmarked: $("editBookmarked").checked,
   };
   const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
