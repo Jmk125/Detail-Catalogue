@@ -355,7 +355,6 @@ def skip_page(project_id: str, page_id: int, settings: StorageSettings | None = 
 
 def process_pending_ai_jobs(limit: int = 20) -> int:
     processed = 0
-    provider = get_ai_provider()
     with connect() as conn:
         jobs = conn.execute(
             """
@@ -380,6 +379,7 @@ def process_pending_ai_jobs(limit: int = 20) -> int:
             conn.execute("UPDATE ai_jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (started, started, job["id"]))
             conn.execute("UPDATE details SET ai_status='running', updated_at=? WHERE id=?", (started, job["detail_id"]))
         try:
+            provider = get_ai_provider()
             crop_path = project_dir(job["project_id"]) / job["crop_image_path"]
             context = build_ai_prompt_context({
                 "project_name": job["project_name"],

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .database import DATA_ROOT, init_db
 from .models import ApproveSheetRequest, SkipSheetRequest
 from .pdf_tools import count_pdf_pages
-from .processing import process_project_pages
+from .processing import enqueue_project_processing
 from .settings import get_settings
 from .storage import (
     add_page_record,
@@ -88,7 +88,7 @@ async def create_project(
             add_page_record(project_id, source_id, global_index, source_page_index)
             global_index += 1
 
-    background_tasks.add_task(process_project_pages, project_id)
+    enqueue_project_processing(project_id)
     return get_project_manifest(project_id)
 
 

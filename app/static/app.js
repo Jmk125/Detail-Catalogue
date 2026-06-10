@@ -11,6 +11,7 @@ let pollTimer = null;
 let libraryGrid = true;
 let loadedPageId = null;
 let drawState = null;
+let deletedBoxPatterns = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -192,7 +193,7 @@ function loadPage() {
   const page = manifest.pages.find(p => p.page_index === pageIndex) || manifest.pages[pageIndex];
   if (!page || page.status !== "ready" || !page.image) return showProcessingNext();
   pageIndex = page.page_index;
-  boxes = structuredClone(page.boxes || []);
+  boxes = applyDeletedBoxPatterns(structuredClone(page.boxes || []), page);
   selectedId = null;
   currentMergeTargetId = null;
 
@@ -483,12 +484,63 @@ function applyOverlapMerge(activeId) {
   selectedId = keep.id;
 }
 
+
+function currentPage() {
+  return manifest?.pages?.find(p => p.page_index === pageIndex) || manifest?.pages?.[pageIndex] || null;
+}
+
+function boxSignature(box, page) {
+  const img = $("sheetImage");
+  const width = page?.width || img.naturalWidth || 1;
+  const height = page?.height || img.naturalHeight || 1;
+  return {
+    x: box.x / width,
+    y: box.y / height,
+    w: box.w / width,
+    h: box.h / height,
+  };
+}
+
+function rememberDeletedBox(box) {
+  const page = currentPage();
+  if (!page || !box) return;
+  const sig = boxSignature(box, page);
+  const alreadyKnown = deletedBoxPatterns.some(pattern => signaturesMatch(sig, pattern, 0.008, 0.015));
+  if (!alreadyKnown) deletedBoxPatterns.push(sig);
+}
+
+function signaturesMatch(a, b, positionTolerance = 0.012, sizeTolerance = 0.02) {
+  return Math.abs(a.x - b.x) <= positionTolerance &&
+    Math.abs(a.y - b.y) <= positionTolerance &&
+    Math.abs(a.w - b.w) <= sizeTolerance &&
+    Math.abs(a.h - b.h) <= sizeTolerance;
+}
+
+function applyDeletedBoxPatterns(candidateBoxes, page) {
+  if (!deletedBoxPatterns.length) return candidateBoxes;
+  return candidateBoxes.filter(box => {
+    if (box.source && !box.source.startsWith("detector")) return true;
+    const sig = boxSignature(box, page);
+    return !deletedBoxPatterns.some(pattern => signaturesMatch(sig, pattern));
+  });
+}
+
 function addBox() {
   const wrap = $("canvasWrap");
   const margin = stageMarginPx();
   const id = `user_${Date.now()}`;
   boxes.push({ id, x: ((wrap.scrollLeft - margin) / zoom) + 80, y: ((wrap.scrollTop - margin) / zoom) + 80, w: 500, h: 350, confidence: 1.0, source: "user" });
   selectedId = id; renderBoxes(); renderBoxList();
+}
+function deleteSelected() {
+  if (!selectedId) return;
+  const deleted = boxes.find(b => b.id === selectedId);
+  rememberDeletedBox(deleted);
+  boxes = boxes.filter(b => b.id !== selectedId);
+  selectedId = null;
+  currentMergeTargetId = null;
+  renderBoxes();
+  renderBoxList();
 }
 function deleteSelected() { if (!selectedId) return; boxes = boxes.filter(b => b.id !== selectedId); selectedId = null; currentMergeTargetId = null; renderBoxes(); renderBoxList(); }
 

@@ -55,6 +55,33 @@ def _merge_boxes(boxes, dx=18, dy=18):
     return boxes
 
 
+def _intersection_area(a, b):
+    ax, ay, aw, ah = a[:4]
+    bx, by, bw, bh = b[:4]
+    x0 = max(ax, bx)
+    y0 = max(ay, by)
+    x1 = min(ax + aw, bx + bw)
+    y1 = min(ay + ah, by + bh)
+    return max(0, x1 - x0) * max(0, y1 - y0)
+
+
+def _dedupe_boxes(boxes, overlap_threshold=0.86):
+    """Prefer smaller, more precise boxes when multi-scale passes overlap heavily."""
+    kept = []
+    for box in sorted([list(map(int, b[:4])) for b in boxes], key=lambda b: (b[2] * b[3], b[1], b[0])):
+        area = max(1, box[2] * box[3])
+        duplicate = False
+        for existing in kept:
+            existing_area = max(1, existing[2] * existing[3])
+            overlap = _intersection_area(box, existing) / min(area, existing_area)
+            if overlap >= overlap_threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(box)
+    return sorted(kept, key=lambda b: (b[1], b[0]))
+
+
 def _horizontal_overlap_ratio(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
@@ -150,6 +177,37 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
+def _cv2_candidates(cv2, thresh, width, height, *, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2):
+    sheet_area = width * height
+    kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
+    kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
+    horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
+    vertical = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_y, iterations=1)
+    combined = cv2.bitwise_or(horizontal, vertical)
+
+    textish_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, text_kernel)
+    textish = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, textish_kernel, iterations=1)
+    combined = cv2.bitwise_or(combined, textish)
+
+    dilater = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_kernel, dilate_kernel))
+    combined = cv2.dilate(combined, dilater, iterations=iterations)
+    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+            continue
+        aspect = w / max(h, 1)
+        if aspect > 12 or aspect < 0.05:
+            continue
+        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
+            continue
+        boxes.append([x, y, w, h])
+    return boxes
+
+
 def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     cv2 = _cv2()
     if cv2 is None:
@@ -167,39 +225,15 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    # Original, stronger OpenCV pass: close horizontal/vertical linework, include
-    # nearby title text, then dilate clusters into reviewable detail candidates.
-    kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (45, 3))
-    kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 45))
-    horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
-    vertical = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_y, iterations=1)
-    combined = cv2.bitwise_or(horizontal, vertical)
+    # Multi-scale detection: the coarse pass behaves like the original detector,
+    # while the fine pass keeps packed detail sheets from collapsing into a few
+    # large blobs when details are tight together.
+    coarse = _cv2_candidates(cv2, thresh, width, height, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2)
+    fine = _cv2_candidates(cv2, thresh, width, height, line_kernel=25, text_kernel=(35, 8), dilate_kernel=10, iterations=1)
 
-    text_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (55, 12))
-    textish = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, text_kernel, iterations=1)
-    combined = cv2.bitwise_or(combined, textish)
-
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (24, 24))
-    combined = cv2.dilate(combined, dilate_kernel, iterations=2)
-
-    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes = []
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        area = w * h
-        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
-            continue
-        aspect = w / max(h, 1)
-        if aspect > 12 or aspect < 0.05:
-            continue
-        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
-            continue
-        boxes.append([x, y, w, h])
-
-    boxes = _merge_boxes(boxes, dx=18, dy=18)
+    boxes = _merge_boxes(coarse, dx=14, dy=14) + _merge_boxes(fine, dx=5, dy=5)
     boxes = _merge_labels_under_details(boxes, width, height)
-    boxes = _merge_boxes(boxes, dx=10, dy=10)
+    boxes = _dedupe_boxes(boxes)
     return _format_results(boxes, width, height, max_boxes)
 
 
@@ -261,27 +295,33 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
     dilate = max(7, int(round(min(width, height) * 0.012)))
     if dilate % 2 == 0:
         dilate += 1
-    mask_img = mask_img.filter(ImageFilter.MaxFilter(dilate))
-    mask_img = mask_img.filter(ImageFilter.MaxFilter(max(3, dilate // 2 * 2 + 1)))
-    mask = np.asarray(mask_img) > 0
-
     boxes = []
-    for x, y, w, h, pixels in _connected_components(mask):
-        area = w * h
-        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
-            continue
-        aspect = w / max(h, 1)
-        if aspect > 12 or aspect < 0.05:
-            continue
-        if pixels < sheet_area * 0.00025:
-            continue
-        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
-            continue
-        boxes.append([x, y, w, h])
+    for factor, merge_gap in ((1.0, 14), (0.45, 5)):
+        pass_dilate = max(3, int(round(dilate * factor)))
+        if pass_dilate % 2 == 0:
+            pass_dilate += 1
+        pass_img = mask_img.filter(ImageFilter.MaxFilter(pass_dilate))
+        if factor >= 1.0:
+            pass_img = pass_img.filter(ImageFilter.MaxFilter(max(3, pass_dilate // 2 * 2 + 1)))
+        mask = np.asarray(pass_img) > 0
 
-    boxes = _merge_boxes(boxes, dx=max(6, int(18 * scale)), dy=max(6, int(18 * scale)))
+        pass_boxes = []
+        for x, y, w, h, pixels in _connected_components(mask):
+            area = w * h
+            if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+                continue
+            aspect = w / max(h, 1)
+            if aspect > 12 or aspect < 0.05:
+                continue
+            if pixels < sheet_area * 0.00025:
+                continue
+            if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
+                continue
+            pass_boxes.append([x, y, w, h])
+        boxes.extend(_merge_boxes(pass_boxes, dx=max(3, int(merge_gap * scale)), dy=max(3, int(merge_gap * scale))))
+
     boxes = _merge_labels_under_details(boxes, width, height)
-    boxes = _merge_boxes(boxes, dx=max(4, int(10 * scale)), dy=max(4, int(10 * scale)))
+    boxes = _dedupe_boxes(boxes)
 
     if scale != 1.0:
         inv = 1 / scale

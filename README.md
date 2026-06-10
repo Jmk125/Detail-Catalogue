@@ -40,18 +40,21 @@ Approved detail crops and thumbnails are the permanent visual artifacts. Full re
 
 ## API keys / `.env`
 
-You do **not** need an `.env` file for the current local stub AI tagger; approved crops and placeholder catalogue records still work without a key. For a real OpenAI-backed tagger, keep the key server-side and provide it as an environment variable. This repo now includes `.env.example`; copy it to `.env` for local use and set `OPENAI_API_KEY=...`. The app loads simple `.env` values at startup without overriding variables you already exported in the shell.
+You do **not** need an `.env` file for the local stub AI tagger; approved crops and placeholder catalogue records still work without a key. For real OpenAI-backed tagging, keep the key server-side and provide it as an environment variable. This repo includes `.env.example`; copy it to `.env`, set `OPENAI_API_KEY=...`, and make sure `AI_TAGGING_PROVIDER=openai` instead of `stub`.
 
 ```bash
 cp .env.example .env
-# edit .env and set OPENAI_API_KEY
+# edit .env:
+# OPENAI_API_KEY=sk-...
+# AI_TAGGING_PROVIDER=openai
+# AI_TAGGING_MODEL=gpt-5.2
 ```
 
-The real `.env` file is ignored by git so secrets are not committed.
+If `AI_TAGGING_PROVIDER=stub`, the app intentionally uses placeholder metadata even if an API key is present. The real `.env` file is ignored by git so secrets are not committed.
 
 ## AI provider seam
 
-`app/ai_tagging.py` defines an `AITaggingProvider` interface and a stub provider. A future provider can use the prepared prompt context (project name, design team, source PDF filename, page number, known discipline, and crop image path) and return structured metadata.
+`app/ai_tagging.py` defines an `AITaggingProvider` interface, a stub provider, and an OpenAI Responses API provider. The OpenAI provider sends the prepared prompt context (project name, design team, source PDF filename, page number, known discipline, and crop image path) with the crop image and stores structured metadata.
 
 ## Reverse proxy / future Node direction
 

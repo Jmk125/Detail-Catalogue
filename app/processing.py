@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .database import connect, utc_now
@@ -7,6 +9,12 @@ from .detector import detect_candidate_detail_boxes
 from .pdf_tools import render_pdf_page
 from .settings import get_settings
 from .storage import project_dir, update_page_failed, update_page_ready
+
+_PROCESSOR = ThreadPoolExecutor(max_workers=int(os.getenv("DETAIL_PROCESSING_WORKERS", "1")))
+
+
+def enqueue_project_processing(project_id: str) -> None:
+    _PROCESSOR.submit(process_project_pages, project_id)
 
 
 def process_project_pages(project_id: str) -> None:
