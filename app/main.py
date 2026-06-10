@@ -19,6 +19,7 @@ from .storage import (
     add_pages_for_source,
     add_source_file,
     ai_scan_status,
+    background_activity_status,
     create_project_record,
     delete_detail,
     get_detail,
@@ -60,6 +61,11 @@ def settings():
 @app.get("/api/design-teams")
 def design_teams(q: str = ""):
     return {"design_teams": list_design_teams(q)}
+
+
+@app.get("/api/background-status")
+def background_status():
+    return background_activity_status()
 
 
 @app.post("/api/projects")
@@ -124,7 +130,7 @@ async def init_project(
 
 
 @app.post("/api/projects/{project_id}/sources")
-async def add_project_source(project_id: str, file: UploadFile = File(...)):
+async def add_project_source(project_id: str, file: UploadFile = File(...), process: bool = Form(True)):
     pdir = project_dir(project_id)
     if not pdir.exists():
         raise HTTPException(status_code=404, detail="Project not found.")
@@ -144,6 +150,19 @@ async def add_project_source(project_id: str, file: UploadFile = File(...)):
 
     add_source_file(project_id, source_id, safe_name, source_rel, page_count)
     add_pages_for_source(project_id, source_id, page_count)
+    if process:
+        enqueue_project_processing(project_id)
+    return get_project_manifest(project_id)
+
+
+@app.post("/api/projects/{project_id}/process")
+def process_project(project_id: str):
+    try:
+        manifest = get_project_manifest(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if not manifest["pages"]:
+        raise HTTPException(status_code=400, detail="Upload at least one PDF before processing.")
     enqueue_project_processing(project_id)
     return get_project_manifest(project_id)
 
