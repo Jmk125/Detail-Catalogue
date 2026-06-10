@@ -1,20 +1,43 @@
+from __future__ import annotations
+
+import shutil
 from pathlib import Path
 from uuid import uuid4
-import shutil
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from .pdf_tools import render_pdf_pages
-from .detector import detect_candidate_detail_boxes
-from .storage import project_dir, save_manifest, load_manifest, save_approved_crops
-from .models import ApproveSheetRequest
 
+from .database import DATA_ROOT, init_db
+from .models import ApproveSheetRequest, DetailUpdateRequest, SkipSheetRequest
+from .pdf_tools import count_pdf_pages
+from .processing import enqueue_project_processing
+from .settings import get_settings
+from .storage import (
+    add_page_record,
+    add_source_file,
+    create_project_record,
+    delete_detail,
+    get_detail,
+    get_next_ready_page,
+    get_project_manifest,
+    get_project_status,
+    list_design_teams,
+    list_details,
+    list_library_facets,
+    make_project_zip,
+    process_pending_ai_jobs,
+    project_dir,
+    save_approved_crops,
+    skip_page,
+    update_detail,
+)
 
-Path("data/projects").mkdir(parents=True, exist_ok=True)
+init_db()
 
-app = FastAPI(title="Detail Harvester MVP")
+app = FastAPI(title="Detail Harvester")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-app.mount("/data", StaticFiles(directory="data"), name="data")
+app.mount("/data", StaticFiles(directory=str(DATA_ROOT)), name="data")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -22,67 +45,146 @@ def index():
     return Path("app/templates/index.html").read_text(encoding="utf-8")
 
 
+@app.get("/api/settings")
+def settings():
+    return get_settings().as_dict()
+
+
+@app.get("/api/design-teams")
+def design_teams(q: str = ""):
+    return {"design_teams": list_design_teams(q)}
+
+
 @app.post("/api/projects")
 async def create_project(
-    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
     project_name: str = Form(""),
     design_team: str = Form(""),
+    discipline: str = Form("unknown"),
 ):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Upload a PDF drawing set.")
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload one or more PDF drawing sets.")
+    bad = [f.filename for f in files if not (f.filename or "").lower().endswith(".pdf")]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Only PDF files are supported: {', '.join(bad)}")
 
     project_id = uuid4().hex[:12]
+    create_project_record(project_id, project_name, design_team, discipline, get_settings())
     pdir = project_dir(project_id)
-    pages_dir = pdir / "pages"
-    pdir.mkdir(parents=True, exist_ok=True)
+    global_index = 0
 
-    pdf_path = pdir / "original.pdf"
-    with pdf_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    for upload in files:
+        source_id = uuid4().hex[:12]
+        safe_name = Path(upload.filename or f"source_{source_id}.pdf").name
+        source_rel = f"sources/{source_id}_{safe_name}"
+        source_path = pdir / source_rel
+        with source_path.open("wb") as f:
+            shutil.copyfileobj(upload.file, f)
+        try:
+            page_count = count_pdf_pages(source_path)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read {safe_name}: {exc}") from exc
+        add_source_file(project_id, source_id, safe_name, source_rel, page_count)
+        for source_page_index in range(page_count):
+            add_page_record(project_id, source_id, global_index, source_page_index)
+            global_index += 1
 
-    pages = render_pdf_pages(pdf_path, pages_dir)
-
-    for page in pages:
-        img_path = pdir / page["image"]
-        page["boxes"] = detect_candidate_detail_boxes(img_path)
-        page["approved"] = False
-        page["approved_box_count"] = 0
-
-    manifest = {
-        "project_id": project_id,
-        "project_name": project_name,
-        "design_team": design_team,
-        "filename": file.filename,
-        "pages": pages,
-    }
-    save_manifest(project_id, manifest)
-    return manifest
+    enqueue_project_processing(project_id)
+    return get_project_manifest(project_id)
 
 
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
-    return load_manifest(project_id)
+    try:
+        return get_project_manifest(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+
+@app.get("/api/projects/{project_id}/status")
+def project_status(project_id: str):
+    try:
+        manifest = get_project_manifest(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {"processing_status": manifest["processing_status"], "pages": manifest["pages"], "status": manifest["status"]}
+
+
+@app.get("/api/projects/{project_id}/next-ready")
+def next_ready_page(project_id: str, after_index: int = Query(-1)):
+    page = get_next_ready_page(project_id, after_index)
+    return {"page": page, "processing_status": get_project_status(project_id)}
 
 
 @app.post("/api/approve-sheet")
-def approve_sheet(req: ApproveSheetRequest):
+def approve_sheet(req: ApproveSheetRequest, background_tasks: BackgroundTasks):
     boxes = [b.model_dump() for b in req.boxes]
-    records = save_approved_crops(req.project_id, req.page_index, boxes)
-    return {"saved": len(records), "records": records}
+    try:
+        records = save_approved_crops(req.project_id, req.page_id, boxes)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    background_tasks.add_task(process_pending_ai_jobs)
+    return {"saved": len(records), "records": records, "processing_status": get_project_status(req.project_id)}
+
+
+@app.post("/api/skip-sheet")
+def skip_sheet(req: SkipSheetRequest):
+    try:
+        skip_page(req.project_id, req.page_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"skipped": True, "processing_status": get_project_status(req.project_id)}
 
 
 @app.get("/api/projects/{project_id}/details")
 def get_details(project_id: str):
-    details_path = project_dir(project_id) / "details.jsonl"
-    if not details_path.exists():
-        return {"details": []}
+    return {"details": list_details(project_id)}
 
-    details = []
-    for line in details_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            import json
-            details.append(json.loads(line))
-    return {"details": details}
+
+@app.get("/api/library/search")
+def library_search(
+    project: str = "",
+    design_team: str = "",
+    discipline: str = "",
+    csi: str = "",
+    tag: str = "",
+    q: str = "",
+    bookmarked: str = "",
+):
+    return {"details": list_details(filters={"project": project, "design_team": design_team, "discipline": discipline, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
+
+
+@app.get("/api/library/facets")
+def library_facets():
+    return list_library_facets()
+
+
+@app.get("/api/details/{detail_id}")
+def detail(detail_id: str):
+    item = get_detail(detail_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return item
+
+
+
+
+@app.put("/api/details/{detail_id}")
+def update_detail_endpoint(detail_id: str, req: DetailUpdateRequest):
+    item = update_detail(detail_id, req.model_dump(exclude_unset=True))
+    if not item:
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return item
+
+
+@app.delete("/api/details/{detail_id}")
+def delete_detail_endpoint(detail_id: str):
+    if not delete_detail(detail_id):
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return {"deleted": True}
 
 
 @app.get("/api/projects/{project_id}/download")
@@ -90,7 +192,5 @@ def download_project(project_id: str):
     pdir = project_dir(project_id)
     if not pdir.exists():
         raise HTTPException(status_code=404, detail="Project not found.")
-
-    zip_path = pdir.with_suffix(".zip")
-    shutil.make_archive(str(pdir), "zip", pdir)
+    zip_path = make_project_zip(project_id)
     return FileResponse(zip_path, media_type="application/zip", filename=f"{project_id}_details.zip")
