@@ -7,12 +7,19 @@
 </head>
 <body>
   <header>
-    <h1>Detail Harvester</h1>
-    <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
+    <div>
+      <h1>Detail Harvester</h1>
+      <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
+    </div>
+    <nav class="tabs" aria-label="Primary">
+      <button id="processTabBtn" class="tab-btn active" data-tab="processTab">Process Drawings</button>
+      <button id="libraryTabBtn" class="tab-btn" data-tab="libraryTab">Detail Library</button>
+    </nav>
   </header>
 
   <main>
-    <section class="panel">
+    <div id="processTab" class="tab-panel active">
+    <section class="panel hero-panel">
       <h2>1. Upload Drawing Set</h2>
 
       <div class="meta-grid">
@@ -92,7 +99,9 @@
         </aside>
       </div>
     </section>
-      <section id="libraryPanel" class="panel">
+    </div>
+      <div id="libraryTab" class="tab-panel hidden">
+      <section id="libraryPanel" class="panel library-panel">
       <div class="toolbar">
         <div>
           <h2>3. Detail Library</h2>
@@ -121,15 +130,17 @@
         </select>
         <input id="filterTag" type="text" placeholder="Tag" />
         <input id="filterCsi" type="text" placeholder="CSI division" />
+        <label class="check-filter"><input id="filterBookmarked" type="checkbox" /> Bookmarked</label>
       </div>
       <div id="libraryResults" class="library-grid"></div>
       <div id="detailModal" class="modal hidden">
-        <div class="modal-card">
+        <div class="modal-card detail-editor-card">
           <button id="closeDetailBtn" class="modal-close">×</button>
           <div id="detailView"></div>
         </div>
       </div>
     </section>
+    </div>
   </main>
 
   <script src="/static/app.js"></script>

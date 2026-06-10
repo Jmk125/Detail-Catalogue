@@ -20,6 +20,8 @@ def project_dir(project_id: str) -> Path:
 def rel_url_path(path: Path, project_id: str) -> str:
     return path.relative_to(project_dir(project_id)).as_posix()
 
+def rel_url_path(path: Path, project_id: str) -> str:
+    return path.relative_to(project_dir(project_id)).as_posix()
 
 def get_or_create_design_team(name: str | None) -> int | None:
     clean = (name or "").strip()
@@ -37,6 +39,21 @@ def get_or_create_design_team(name: str | None) -> int | None:
         )
         return int(cur.lastrowid)
 
+def get_or_create_design_team(name: str | None) -> int | None:
+    clean = (name or "").strip()
+    if not clean:
+        return None
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM design_teams WHERE lower(name)=lower(?)", (clean,)).fetchone()
+        if row:
+            conn.execute("UPDATE design_teams SET last_used_at=? WHERE id=?", (now, row["id"]))
+            return int(row["id"])
+        cur = conn.execute(
+            "INSERT INTO design_teams(name, created_at, last_used_at) VALUES(?, ?, ?)",
+            (clean, now, now),
+        )
+        return int(cur.lastrowid)
 
 def list_design_teams(q: str = "") -> list[dict[str, Any]]:
     like = f"%{q.strip()}%"
@@ -53,6 +70,20 @@ def list_design_teams(q: str = "") -> list[dict[str, Any]]:
         ).fetchall()
         return [dict(r) for r in rows]
 
+def list_design_teams(q: str = "") -> list[dict[str, Any]]:
+    like = f"%{q.strip()}%"
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, created_at, last_used_at
+            FROM design_teams
+            WHERE ? = '%%' OR name LIKE ?
+            ORDER BY last_used_at DESC, name ASC
+            LIMIT 50
+            """,
+            (like, like),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None) -> None:
     settings = settings or get_settings()
@@ -427,6 +458,7 @@ def detail_row_to_api(row: Any) -> dict[str, Any]:
     d["csi_divisions"] = json_loads(d.pop("csi_divisions_json", None), [])
     d["tags"] = json_loads(d.pop("tags_json", None), [])
     d["warnings"] = json_loads(d.pop("warnings_json", None), [])
+    d["bookmarked"] = bool(d.get("bookmarked"))
     return d
 
 
@@ -444,6 +476,8 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         clauses.append("details.discipline=?"); params.append(filters["discipline"])
     if filters.get("tag"):
         clauses.append("details.tags_json LIKE ?"); params.append(f"%{filters['tag']}%")
+    if filters.get("bookmarked") in {"1", "true", "yes"}:
+        clauses.append("details.bookmarked=1")
     if filters.get("csi"):
         clauses.append("details.csi_divisions_json LIKE ?"); params.append(f"%{filters['csi']}%")
     if filters.get("q"):
@@ -484,6 +518,73 @@ def get_detail(detail_id: str) -> dict[str, Any] | None:
             (detail_id,),
         ).fetchone()
         return detail_row_to_api(row) if row else None
+
+
+def _sync_detail_tags(conn, detail_id: str, tags: list[str]) -> None:
+    conn.execute("DELETE FROM detail_tags WHERE detail_id=?", (detail_id,))
+    for tag in tags:
+        clean = str(tag).strip()
+        if not clean:
+            continue
+        conn.execute("INSERT OR IGNORE INTO tags(name) VALUES(?)", (clean,))
+        tag_id = conn.execute("SELECT id FROM tags WHERE name=?", (clean,)).fetchone()["id"]
+        conn.execute("INSERT OR IGNORE INTO detail_tags(detail_id, tag_id) VALUES(?, ?)", (detail_id, tag_id))
+
+
+def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    allowed = {
+        "detail_title",
+        "detail_number",
+        "sheet_number",
+        "discipline",
+        "summary",
+        "searchable_description",
+        "assembly_system_type",
+        "bookmarked",
+    }
+    assignments = []
+    params = []
+    for key in allowed:
+        if key in updates:
+            value = int(bool(updates[key])) if key == "bookmarked" else updates[key]
+            assignments.append(f"{key}=?")
+            params.append(value)
+    if "tags" in updates and updates["tags"] is not None:
+        tags = [str(t).strip() for t in updates["tags"] if str(t).strip()]
+        assignments.append("tags_json=?")
+        params.append(json.dumps(tags))
+    else:
+        tags = None
+
+    if not assignments:
+        return get_detail(detail_id)
+
+    assignments.append("updated_at=?")
+    params.append(utc_now())
+    params.append(detail_id)
+    with connect() as conn:
+        exists = conn.execute("SELECT id FROM details WHERE id=?", (detail_id,)).fetchone()
+        if not exists:
+            return None
+        conn.execute(f"UPDATE details SET {', '.join(assignments)} WHERE id=?", params)
+        if tags is not None:
+            _sync_detail_tags(conn, detail_id, tags)
+    return get_detail(detail_id)
+
+
+def delete_detail(detail_id: str) -> bool:
+    detail = get_detail(detail_id)
+    if not detail:
+        return False
+    pdir = project_dir(detail["project_id"])
+    for rel in (detail.get("crop_image"), detail.get("thumbnail")):
+        if rel:
+            path = pdir / rel
+            if path.exists():
+                path.unlink()
+    with connect() as conn:
+        conn.execute("DELETE FROM details WHERE id=?", (detail_id,))
+    return True
 
 
 def list_library_facets() -> dict[str, Any]:

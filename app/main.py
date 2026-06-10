@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import DATA_ROOT, init_db
-from .models import ApproveSheetRequest, SkipSheetRequest
+from .models import ApproveSheetRequest, DetailUpdateRequest, SkipSheetRequest
 from .pdf_tools import count_pdf_pages
 from .processing import enqueue_project_processing
 from .settings import get_settings
@@ -17,6 +17,7 @@ from .storage import (
     add_page_record,
     add_source_file,
     create_project_record,
+    delete_detail,
     get_detail,
     get_next_ready_page,
     get_project_manifest,
@@ -29,6 +30,7 @@ from .storage import (
     project_dir,
     save_approved_crops,
     skip_page,
+    update_detail,
 )
 
 init_db()
@@ -150,8 +152,9 @@ def library_search(
     csi: str = "",
     tag: str = "",
     q: str = "",
+    bookmarked: str = "",
 ):
-    return {"details": list_details(filters={"project": project, "design_team": design_team, "discipline": discipline, "csi": csi, "tag": tag, "q": q})}
+    return {"details": list_details(filters={"project": project, "design_team": design_team, "discipline": discipline, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
 
 
 @app.get("/api/library/facets")
@@ -165,6 +168,23 @@ def detail(detail_id: str):
     if not item:
         raise HTTPException(status_code=404, detail="Detail not found.")
     return item
+
+
+
+
+@app.put("/api/details/{detail_id}")
+def update_detail_endpoint(detail_id: str, req: DetailUpdateRequest):
+    item = update_detail(detail_id, req.model_dump(exclude_unset=True))
+    if not item:
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return item
+
+
+@app.delete("/api/details/{detail_id}")
+def delete_detail_endpoint(detail_id: str):
+    if not delete_detail(detail_id):
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return {"deleted": True}
 
 
 @app.get("/api/projects/{project_id}/download")

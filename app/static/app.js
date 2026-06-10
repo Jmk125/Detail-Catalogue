@@ -28,8 +28,11 @@ $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
+for (const btn of document.querySelectorAll(".tab-btn")) {
+  btn.addEventListener("click", () => showTab(btn.dataset.tab));
+}
 
-for (const id of ["librarySearch", "filterProject", "filterDesignTeam", "filterDiscipline", "filterTag", "filterCsi"]) {
+for (const id of ["librarySearch", "filterProject", "filterDesignTeam", "filterDiscipline", "filterTag", "filterCsi", "filterBookmarked"]) {
   $(id).addEventListener("input", debounce(loadLibrary, 250));
   $(id).addEventListener("change", loadLibrary);
 }
@@ -74,6 +77,17 @@ function setSelectedFileStatus() {
 function debounce(fn, delay) {
   let timer;
   return () => { clearTimeout(timer); timer = setTimeout(fn, delay); };
+}
+
+function showTab(tabId) {
+  for (const panel of document.querySelectorAll(".tab-panel")) {
+    panel.classList.toggle("hidden", panel.id !== tabId);
+    panel.classList.toggle("active", panel.id === tabId);
+  }
+  for (const btn of document.querySelectorAll(".tab-btn")) {
+    btn.classList.toggle("active", btn.dataset.tab === tabId);
+  }
+  if (tabId === "libraryTab") loadLibrary();
 }
 
 async function loadDesignTeams() {
@@ -588,10 +602,10 @@ async function loadDetails() {
 
 function detailCard(d, compact = false) {
   const card = document.createElement("div");
-  card.className = "detail-card";
+  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "");
   const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
   card.innerHTML = `
-    <img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" />
+    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><span class="bookmark-badge">${d.bookmarked ? "★" : "☆"}</span></div>
     <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
     <small>${escapeHtml(d.project_name || "Unnamed project")} · ${escapeHtml(d.design_team || "No design team")} · ${escapeHtml(d.discipline || "unknown")}</small><br>
     <small>${escapeHtml(d.source_filename || "PDF")} page ${d.page_number || "?"} · Detail ${escapeHtml(d.detail_number || "?")} · Sheet ${escapeHtml(d.sheet_number || "?")}</small>
@@ -610,7 +624,8 @@ async function loadLibrary() {
     design_team: $("filterDesignTeam").value || "",
     discipline: $("filterDiscipline").value || "",
     tag: $("filterTag").value || "",
-    csi: $("filterCsi").value || ""
+    csi: $("filterCsi").value || "",
+    bookmarked: $("filterBookmarked").checked ? "1" : ""
   });
   const res = await fetch(`/api/library/search?${params.toString()}`);
   if (!res.ok) return;
@@ -626,26 +641,98 @@ async function openDetail(id) {
   const res = await fetch(`/api/details/${id}`);
   if (!res.ok) return;
   const d = await res.json();
-  $("detailView").innerHTML = `
-    <h2>${escapeHtml(d.detail_title || "Untitled detail")}</h2>
-    <img class="detail-large" src="/data/projects/${d.project_id}/${d.crop_image}" alt="Approved detail crop" />
-    <dl>
-      <dt>Project</dt><dd>${escapeHtml(d.project_name || "")}</dd>
-      <dt>Design Team</dt><dd>${escapeHtml(d.design_team || "")}</dd>
-      <dt>Discipline</dt><dd>${escapeHtml(d.discipline || "unknown")}</dd>
-      <dt>Source PDF</dt><dd>${escapeHtml(d.source_filename || "")}, page ${d.page_number || "?"}</dd>
-      <dt>Detail / Sheet #</dt><dd>${escapeHtml(d.detail_number || "?")} / ${escapeHtml(d.sheet_number || "?")}</dd>
-      <dt>CSI</dt><dd>${escapeHtml((d.csi_divisions || []).join(", "))}</dd>
-      <dt>Tags</dt><dd>${escapeHtml((d.tags || []).join(", "))}</dd>
-      <dt>Summary</dt><dd>${escapeHtml(d.summary || "")}</dd>
-      <dt>Description</dt><dd>${escapeHtml(d.searchable_description || "")}</dd>
-      <dt>Warnings</dt><dd>${escapeHtml((d.warnings || []).join("; "))}</dd>
-    </dl>`;
+  renderDetailEditor(d);
   $("detailModal").classList.remove("hidden");
 }
 
+function renderDetailEditor(d) {
+  $("detailView").innerHTML = `
+    <div class="detail-editor">
+      <div class="detail-preview">
+        <img class="detail-large" src="/data/projects/${d.project_id}/${d.crop_image}" alt="Approved detail crop" />
+        <div class="detail-meta-card">
+          <strong>${escapeHtml(d.project_name || "Unnamed project")}</strong>
+          <span>${escapeHtml(d.design_team || "No design team")}</span>
+          <span>${escapeHtml(d.source_filename || "PDF")}, page ${d.page_number || "?"}</span>
+          <span>AI: ${escapeHtml(d.ai_status || "pending")}</span>
+        </div>
+      </div>
+      <form id="detailEditForm" class="detail-form">
+        <div class="form-header">
+          <h2>Edit Detail</h2>
+          <label class="bookmark-toggle"><input id="editBookmarked" type="checkbox" ${d.bookmarked ? "checked" : ""}/> ★ Bookmark</label>
+        </div>
+        <label>Detail Name<input id="editTitle" type="text" value="${escapeAttr(d.detail_title || "")}" placeholder="Untitled detail" /></label>
+        <div class="form-grid-2">
+          <label>Detail #<input id="editDetailNumber" type="text" value="${escapeAttr(d.detail_number || "")}" /></label>
+          <label>Sheet #<input id="editSheetNumber" type="text" value="${escapeAttr(d.sheet_number || "")}" /></label>
+        </div>
+        <label>Discipline
+          <select id="editDiscipline">
+            ${disciplineOptions(d.discipline || "unknown")}
+          </select>
+        </label>
+        <label>Tags<input id="editTags" type="text" value="${escapeAttr((d.tags || []).join(", "))}" placeholder="comma, separated, tags" /></label>
+        <label>AI Summary / Description<textarea id="editSummary" rows="5">${escapeHtml(d.summary || "")}</textarea></label>
+        <label>Searchable Description<textarea id="editDescription" rows="5">${escapeHtml(d.searchable_description || "")}</textarea></label>
+        <label>Assembly/System Type<input id="editAssembly" type="text" value="${escapeAttr(d.assembly_system_type || "")}" /></label>
+        <div class="editor-actions">
+          <button type="submit" class="primary-btn">Save Changes</button>
+          <button type="button" id="deleteDetailBtn" class="danger-btn">Delete Detail</button>
+        </div>
+        <p class="hint">Warnings: ${escapeHtml((d.warnings || []).join("; ") || "None")}</p>
+      </form>
+    </div>`;
+
+  $("detailEditForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const updated = await saveDetailEdits(d.id);
+    if (updated) renderDetailEditor(updated);
+  });
+  $("deleteDetailBtn").addEventListener("click", async () => deleteDetailFromEditor(d.id));
+}
+
+function disciplineOptions(selected) {
+  const values = ["architectural", "structural", "civil", "mechanical", "electrical", "plumbing", "fire protection", "technology/security", "unknown"];
+  return values.map(value => `<option value="${escapeAttr(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+}
+
+async function saveDetailEdits(id) {
+  const payload = {
+    detail_title: $("editTitle").value.trim() || null,
+    detail_number: $("editDetailNumber").value.trim() || null,
+    sheet_number: $("editSheetNumber").value.trim() || null,
+    discipline: $("editDiscipline").value,
+    tags: $("editTags").value.split(",").map(t => t.trim()).filter(Boolean),
+    summary: $("editSummary").value.trim() || null,
+    searchable_description: $("editDescription").value.trim() || null,
+    assembly_system_type: $("editAssembly").value.trim() || null,
+    bookmarked: $("editBookmarked").checked,
+  };
+  const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
+  if (!res.ok) { alert(await res.text()); return null; }
+  const updated = await res.json();
+  await loadLibrary();
+  if (projectId) await loadDetails();
+  return updated;
+}
+
+async function deleteDetailFromEditor(id) {
+  if (!confirm("Delete this detail crop and metadata? This cannot be undone.")) return;
+  const res = await fetch(`/api/details/${id}`, { method: "DELETE" });
+  if (!res.ok) { alert(await res.text()); return; }
+  $("detailModal").classList.add("hidden");
+  await loadLibrary();
+  if (projectId) await loadDetails();
+}
+
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
 function downloadProject() { if (projectId) window.location.href = `/api/projects/${projectId}/download`; }

@@ -40,6 +40,12 @@ def connect() -> Iterable[sqlite3.Connection]:
         conn.close()
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     ensure_data_dirs()
     with connect() as conn:
@@ -113,6 +119,7 @@ def init_db() -> None:
                 searchable_description TEXT,
                 confidence_score REAL,
                 warnings_json TEXT NOT NULL DEFAULT '[]',
+                bookmarked INTEGER NOT NULL DEFAULT 0,
                 ai_status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -147,6 +154,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_jobs(status);
             """
         )
+        _ensure_column(conn, "details", "bookmarked", "INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_details_bookmarked ON details(bookmarked)")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -21,3 +21,15 @@ class ApproveSheetRequest(BaseModel):
 class SkipSheetRequest(BaseModel):
     project_id: str
     page_id: int
+
+
+class DetailUpdateRequest(BaseModel):
+    detail_title: Optional[str] = None
+    detail_number: Optional[str] = None
+    sheet_number: Optional[str] = None
+    discipline: Optional[str] = None
+    tags: Optional[List[str]] = None
+    summary: Optional[str] = None
+    searchable_description: Optional[str] = None
+    assembly_system_type: Optional[str] = None
+    bookmarked: Optional[bool] = None
