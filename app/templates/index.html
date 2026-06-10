@@ -28,7 +28,7 @@
           <input id="projectName" type="text" placeholder="Example: North Ridgeville HS" />
         </label>
         <label>
-          Design Team
+          Design Team / Architect
           <input id="designTeam" type="text" list="designTeamOptions" placeholder="Example: GPD Group / ThenDesign / etc." />
           <datalist id="designTeamOptions"></datalist>
         </label>
@@ -46,6 +46,14 @@
             <option value="technology/security">Technology/Security</option>
           </select>
         </label>
+      </div>
+
+      <div class="designers-section">
+        <h3>Designers by Discipline (optional)</h3>
+        <p class="hint">The architect (Design Team above) is added automatically. Add other firms (e.g. structural engineer) so details from that discipline are credited to them, while still showing under the architect.</p>
+        <div id="designerRows"></div>
+        <button type="button" id="addDesignerRowBtn">+ Add Designer</button>
+        <datalist id="firmNameOptions"></datalist>
       </div>
 
       <div id="dropZone">

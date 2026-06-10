@@ -160,6 +160,40 @@ button:hover { background: #eee; }
 
 .crop-box.selected .label { background: #ff8800; }
 
+.sheet-num-box {
+  position: absolute;
+  border-style: solid;
+  border-color: #ff0000;
+  background: rgba(255, 0, 0, 0.08);
+  pointer-events: auto;
+  cursor: move;
+}
+
+.sheet-num-box .label {
+  position: absolute;
+  left: 0;
+  top: -22px;
+  background: #ff0000;
+  color: white;
+  font-size: 12px;
+  padding: 2px 5px;
+}
+
+.designers-section {
+  grid-column: 1 / -1;
+}
+
+.designer-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.designer-row .designer-firm {
+  flex: 1;
+}
+
 /* Resize is handled by cursor hit-testing in JavaScript rather than visible handles. */
 
 aside {

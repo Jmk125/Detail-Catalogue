@@ -12,8 +12,37 @@ let libraryGrid = true;
 let loadedPageId = null;
 let drawState = null;
 let deletedBoxPatterns = [];
+let sheetBox = null;
+let sheetDragState = null;
 
 const $ = (id) => document.getElementById(id);
+
+const DISCIPLINE_VALUES = ["architectural", "structural", "civil", "mechanical", "electrical", "plumbing", "fire protection", "technology/security", "unknown"];
+
+$("addDesignerRowBtn").addEventListener("click", () => addDesignerRow());
+
+function addDesignerRow(discipline = "structural", firmName = "", containerId = "designerRows") {
+  const row = document.createElement("div");
+  row.className = "designer-row";
+  row.innerHTML = `
+    <select class="designer-discipline">${DISCIPLINE_VALUES.filter(v => v !== "unknown").map(v => `<option value="${v}" ${v === discipline ? "selected" : ""}>${v}</option>`).join("")}</select>
+    <input class="designer-firm" type="text" list="firmNameOptions" placeholder="Firm name" value="${escapeAttr(firmName)}" />
+    <button type="button" class="remove-designer-row">×</button>
+  `;
+  row.querySelector(".remove-designer-row").addEventListener("click", () => row.remove());
+  $(containerId).appendChild(row);
+}
+
+function collectDesigners(containerId = "designerRows") {
+  const rows = $(containerId).querySelectorAll(".designer-row");
+  const designers = [];
+  for (const row of rows) {
+    const discipline = row.querySelector(".designer-discipline").value;
+    const firmName = row.querySelector(".designer-firm").value.trim();
+    if (firmName) designers.push({ discipline, firm_name: firmName });
+  }
+  return designers;
+}
 
 $("uploadBtn").addEventListener("click", uploadPdf);
 $("prevBtn").addEventListener("click", () => changePage(-1));
@@ -112,10 +141,15 @@ async function loadDesignTeams() {
   const data = await res.json();
   const list = $("designTeamOptions");
   list.innerHTML = "";
+  const firmList = $("firmNameOptions");
+  firmList.innerHTML = "";
   for (const team of data.design_teams) {
     const option = document.createElement("option");
     option.value = team.name;
     list.appendChild(option);
+    const firmOption = document.createElement("option");
+    firmOption.value = team.name;
+    firmList.appendChild(firmOption);
   }
 }
 
@@ -133,6 +167,7 @@ async function uploadPdf() {
   form.append("project_name", $("projectName").value || "");
   form.append("design_team", $("designTeam").value || "");
   form.append("discipline", $("discipline").value || "unknown");
+  form.append("designers", JSON.stringify(collectDesigners()));
 
   const res = await fetch("/api/projects", { method: "POST", body: form });
   if (!res.ok) {
@@ -244,6 +279,7 @@ function loadPage() {
     $("boxLayer").style.height = `${img.naturalHeight}px`;
     $("sheetStage").style.width = `${img.naturalWidth}px`;
     $("sheetStage").style.height = `${img.naturalHeight}px`;
+    sheetBox = clampSheetBox(page.sheet_box || manifest.last_sheet_box || defaultSheetBox(img), img);
     fitToView();
     renderBoxes();
   };
@@ -438,6 +474,75 @@ function renderBoxes() {
     el.addEventListener("mousedown", (e) => { if (e.button !== 0) return; e.stopPropagation(); startDrag(e, box.id, getResizeModeFromMouseEvent(e, el)); });
     layer.appendChild(el);
   }
+  renderSheetBox();
+}
+
+function defaultSheetBox(img) {
+  const w = Math.min(300, img.naturalWidth * 0.25);
+  const h = Math.min(150, img.naturalHeight * 0.12);
+  const margin = 20;
+  return { x: img.naturalWidth - w - margin, y: img.naturalHeight - h - margin, w, h };
+}
+
+function clampSheetBox(box, img) {
+  const w = Math.min(box.w, img.naturalWidth);
+  const h = Math.min(box.h, img.naturalHeight);
+  return {
+    x: Math.max(0, Math.min(img.naturalWidth - w, box.x)),
+    y: Math.max(0, Math.min(img.naturalHeight - h, box.y)),
+    w, h,
+  };
+}
+
+function renderSheetBox() {
+  if (!sheetBox) return;
+  const layer = $("boxLayer");
+  const el = document.createElement("div");
+  el.className = "sheet-num-box";
+  el.style.left = `${sheetBox.x}px`; el.style.top = `${sheetBox.y}px`; el.style.width = `${sheetBox.w}px`; el.style.height = `${sheetBox.h}px`;
+  const borderPx = Math.max(1, 3 / zoom);
+  el.style.borderWidth = `${borderPx}px`;
+  const label = document.createElement("div");
+  label.className = "label"; label.textContent = "Sheet #";
+  label.style.fontSize = `${12 / zoom}px`; label.style.top = `${-22 / zoom}px`; label.style.padding = `${2 / zoom}px ${5 / zoom}px`;
+  el.appendChild(label);
+  el.addEventListener("mousemove", (e) => { if (!sheetDragState) el.style.cursor = cursorForMode(getResizeModeFromMouseEvent(e, el)); });
+  el.addEventListener("mousedown", (e) => { if (e.button !== 0) return; e.stopPropagation(); startSheetDrag(e, getResizeModeFromMouseEvent(e, el)); });
+  layer.appendChild(el);
+}
+
+function startSheetDrag(e, mode) {
+  sheetDragState = { mode, startX: e.clientX, startY: e.clientY, orig: { ...sheetBox } };
+  document.addEventListener("mousemove", onSheetDrag);
+  document.addEventListener("mouseup", stopSheetDrag);
+}
+
+function onSheetDrag(e) {
+  if (!sheetDragState) return;
+  const dx = (e.clientX - sheetDragState.startX) / zoom;
+  const dy = (e.clientY - sheetDragState.startY) / zoom;
+  const o = sheetDragState.orig;
+  const mode = sheetDragState.mode;
+  const minSize = 30;
+  let x = o.x, y = o.y, w = o.w, h = o.h;
+  if (mode === "move") { x = o.x + dx; y = o.y + dy; }
+  else {
+    if (mode.includes("w")) { x = o.x + dx; w = o.w - dx; }
+    if (mode.includes("e")) w = o.w + dx;
+    if (mode.includes("n")) { y = o.y + dy; h = o.h - dy; }
+    if (mode.includes("s")) h = o.h + dy;
+    if (w < minSize) { if (mode.includes("w")) x = o.x + o.w - minSize; w = minSize; }
+    if (h < minSize) { if (mode.includes("n")) y = o.y + o.h - minSize; h = minSize; }
+  }
+  const img = $("sheetImage");
+  sheetBox = clampSheetBox({ x, y, w: Math.max(minSize, w), h: Math.max(minSize, h) }, img);
+  renderBoxes();
+}
+
+function stopSheetDrag() {
+  sheetDragState = null;
+  document.removeEventListener("mousemove", onSheetDrag);
+  document.removeEventListener("mouseup", stopSheetDrag);
 }
 
 function renderBoxList() {
@@ -622,11 +727,13 @@ async function approveSheet() {
   const res = await fetch("/api/approve-sheet", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ project_id: projectId, page_id: page.id, boxes })
+    body: JSON.stringify({ project_id: projectId, page_id: page.id, boxes, sheet_box: sheetBox })
   });
   if (!res.ok) { alert(await res.text()); return; }
   const data = await res.json();
   page.status = "approved"; page.boxes = structuredClone(boxes); page.approved = true;
+  page.sheet_box = structuredClone(sheetBox);
+  manifest.last_sheet_box = structuredClone(sheetBox);
   renderProcessingStatus(data.processing_status);
   loadDetails();
   loadLibrary();
@@ -846,6 +953,7 @@ function renderDetailEditor(d) {
           <div class="detail-meta-line">
             <strong>${escapeHtml(d.project_name || "Unnamed project")}</strong>
             <span>${escapeHtml(d.design_team || "No design team")}</span>
+            ${d.discipline_designer ? `<span>${escapeHtml(d.discipline)} engineer: ${escapeHtml(d.discipline_designer)}</span>` : ""}
             <span>${escapeHtml(d.source_filename || "PDF")}, page ${d.page_number || "?"}</span>
             <span>AI: ${escapeHtml(d.ai_status || "pending")}</span>
           </div>
@@ -882,6 +990,11 @@ function renderDetailEditor(d) {
         </label>
         <label>Tags<input id="editTags" type="text" value="${escapeAttr((d.tags || []).join(", "))}" placeholder="comma, separated, tags" /></label>
         <label>CSI Divisions<input id="editCsi" type="text" value="${escapeAttr((d.csi_divisions || []).join(", "))}" placeholder="comma, separated CSI divisions" /></label>
+        <div class="designers-section">
+          <h3>Designers by Discipline</h3>
+          <div id="editDesignerRows"></div>
+          <button type="button" id="addEditDesignerRowBtn">+ Add Designer</button>
+        </div>
         <label>Notes<textarea id="editNotes" rows="4" placeholder="Personal notes, e.g. this was a pain to build...">${escapeHtml(d.notes || "")}</textarea></label>
         <label>AI Summary / Description<textarea id="editSummary" rows="5">${escapeHtml(d.summary || "")}</textarea></label>
         <label>Searchable Description<textarea id="editDescription" rows="5">${escapeHtml(d.searchable_description || "")}</textarea></label>
@@ -902,6 +1015,11 @@ function renderDetailEditor(d) {
   });
   $("deleteDetailBtn").addEventListener("click", async () => deleteDetailFromEditor(d.id));
   $("rescanDetailBtn").addEventListener("click", async () => rescanDetailFromEditor(d));
+  $("addEditDesignerRowBtn").addEventListener("click", () => addDesignerRow("structural", "", "editDesignerRows"));
+  for (const designer of (d.designers || [])) {
+    if (designer.discipline === "architectural") continue;
+    addDesignerRow(designer.discipline, designer.firm_name, "editDesignerRows");
+  }
   setupDetailViewer();
 }
 
@@ -1003,6 +1121,7 @@ async function saveDetailEdits(id) {
     assembly_system_type: $("editAssembly").value.trim() || null,
     notes: $("editNotes").value.trim() || null,
     bookmarked: $("editBookmarked").checked,
+    designers: collectDesigners("editDesignerRows"),
   };
   const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
   if (!res.ok) { alert(await res.text()); return null; }

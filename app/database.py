@@ -68,6 +68,14 @@ def init_db() -> None:
                 settings_json TEXT NOT NULL DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS project_designers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                discipline TEXT NOT NULL,
+                firm_name TEXT NOT NULL,
+                UNIQUE(project_id, discipline)
+            );
+
             CREATE TABLE IF NOT EXISTS source_files (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -92,6 +100,7 @@ def init_db() -> None:
                 pdf_height REAL,
                 zoom REAL,
                 boxes_json TEXT NOT NULL DEFAULT '[]',
+                sheet_box_json TEXT,
                 approved_box_count INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 created_at TEXT NOT NULL,
@@ -156,7 +165,10 @@ def init_db() -> None:
         )
         _ensure_column(conn, "details", "bookmarked", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "details", "notes", "TEXT")
+        _ensure_column(conn, "pages", "sheet_box_json", "TEXT")
+        _ensure_column(conn, "projects", "last_sheet_box_json", "TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_details_bookmarked ON details(bookmarked)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_project_designers_project ON project_designers(project_id)")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -67,6 +68,7 @@ async def create_project(
     project_name: str = Form(""),
     design_team: str = Form(""),
     discipline: str = Form("unknown"),
+    designers: str = Form("[]"),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="Upload one or more PDF drawing sets.")
@@ -74,8 +76,13 @@ async def create_project(
     if bad:
         raise HTTPException(status_code=400, detail=f"Only PDF files are supported: {', '.join(bad)}")
 
+    try:
+        designer_list = json.loads(designers) if designers else []
+    except json.JSONDecodeError:
+        designer_list = []
+
     project_id = uuid4().hex[:12]
-    create_project_record(project_id, project_name, design_team, discipline, get_settings())
+    create_project_record(project_id, project_name, design_team, discipline, get_settings(), designer_list)
     pdir = project_dir(project_id)
     global_index = 0
 
@@ -137,7 +144,7 @@ def redetect_sheet(req: RedetectSheetRequest):
 def approve_sheet(req: ApproveSheetRequest, background_tasks: BackgroundTasks):
     boxes = [b.model_dump() for b in req.boxes]
     try:
-        records = save_approved_crops(req.project_id, req.page_id, boxes)
+        records = save_approved_crops(req.project_id, req.page_id, boxes, sheet_box=req.sheet_box)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:

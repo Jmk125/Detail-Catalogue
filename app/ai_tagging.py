@@ -34,6 +34,10 @@ class AITaggingProvider(ABC):
     def tag_detail(self, image_path: Path, context: dict[str, Any]) -> dict[str, Any]:
         """Return structured catalog metadata for one approved detail crop."""
 
+    def read_sheet_number(self, image_path: Path) -> str | None:
+        """Read a sheet number from a small crop of the sheet's title block. Optional override."""
+        return None
+
 
 def _normalize_result(result: dict[str, Any], known_discipline: str = "unknown") -> dict[str, Any]:
     discipline = (result.get("discipline") or known_discipline or "unknown").lower()
@@ -135,6 +139,42 @@ class OpenAIResponsesTaggingProvider(AITaggingProvider):
         if not output_text:
             raise RuntimeError("OpenAI response did not include output_text metadata JSON.")
         return _normalize_result(json.loads(output_text), context.get("known_discipline") or "unknown")
+
+    def read_sheet_number(self, image_path: Path) -> str | None:
+        image_data_url = _image_data_url(image_path)
+        prompt = (
+            "This image is a small crop from the title block area of a construction drawing sheet. "
+            "Return only the sheet number printed in this crop (e.g. 'A-501', 'S-201'), with no other text. "
+            "If no sheet number is visible, return an empty string."
+        )
+        payload = {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": image_data_url, "detail": "high"},
+                    ],
+                }
+            ],
+        }
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            return None
+        text = (body.get("output_text") or _extract_output_text(body) or "").strip()
+        return text or None
 
 
 def _extract_output_text(response: dict[str, Any]) -> str | None:
