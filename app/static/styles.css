@@ -196,3 +196,118 @@ aside {
   max-width: 100%;
   border: 1px solid #ccc;
 }
+
+.meta-grid select {
+  padding: 9px;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+}
+
+.status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.status-grid span {
+  background: #eef4ff;
+  border: 1px solid #c8dcff;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.library-filters {
+  display: grid;
+  grid-template-columns: 2fr repeat(5, 1fr);
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.library-filters input,
+.library-filters select {
+  padding: 9px;
+  border: 1px solid #aaa;
+  border-radius: 6px;
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.library-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.library-list .detail-card {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  column-gap: 12px;
+}
+
+.tag {
+  display: inline-block;
+  background: #f1f1f1;
+  border: 1px solid #ddd;
+  border-radius: 999px;
+  padding: 2px 7px;
+  margin: 2px 2px 2px 0;
+  font-size: 12px;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 28px;
+}
+
+.modal.hidden { display: none; }
+
+.modal-card {
+  position: relative;
+  max-width: 1100px;
+  max-height: 90vh;
+  overflow: auto;
+  background: white;
+  border-radius: 10px;
+  padding: 18px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+}
+
+.modal-close {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  font-size: 22px;
+}
+
+.detail-large {
+  max-width: 100%;
+  border: 1px solid #ccc;
+  background: white;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 6px 12px;
+}
+
+dt { font-weight: bold; }
+dd { margin: 0; }
+
+@media (max-width: 1100px) {
+  .workspace { grid-template-columns: 1fr; }
+  aside { border-left: 0; border-top: 1px solid #ddd; padding-left: 0; padding-top: 12px; }
+  .library-filters { grid-template-columns: 1fr 1fr; }
+}
