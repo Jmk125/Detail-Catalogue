@@ -286,7 +286,7 @@ def get_next_ready_page(project_id: str, after_index: int = -1) -> dict[str, Any
             """,
             (project_id, after_index),
         ).fetchone()
-        if not row:
+        if not row and after_index < 0:
             row = conn.execute(
                 """
                 SELECT pages.*, source_files.filename
