@@ -965,6 +965,91 @@ main {
 
 .scan-status.hidden { display: none; }
 
+/* Library filter dropdown alignment + clean checkboxes */
+.library-filters input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--primary);
+}
+
+.multi-filter-options label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+/* Keep the bookmark pill clear of the modal close button */
+.detail-editor .form-header {
+  padding-right: 46px;
+}
+
+/* Richer cards in library list view */
+.library-list .detail-card.list-card {
+  grid-template-columns: 220px minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: stretch;
+}
+
+.list-card .card-thumb-wrap {
+  margin: -10px 0 -10px -10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.list-card .card-thumb-wrap img {
+  max-height: 200px;
+}
+
+.list-card-info {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.list-card-info strong {
+  font-size: 15px;
+  margin-bottom: 0;
+}
+
+.list-summary {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.list-tags {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.list-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  margin-top: 2px;
+}
+
+.meta-label {
+  font-weight: 700;
+  color: var(--text);
+}
+
 @media (max-width: 1100px) {
   .detail-editor {
     grid-template-columns: 1fr;

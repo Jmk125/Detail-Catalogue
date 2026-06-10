@@ -513,6 +513,11 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
             params.extend(project_ids)
     if filters.get("design_team"):
         clauses.append("dt.name LIKE ?"); params.append(f"%{filters['design_team']}%")
+    if filters.get("design_teams"):
+        team_ids = [t.strip() for t in filters["design_teams"].split(",") if t.strip()]
+        if team_ids:
+            clauses.append(f"projects.design_team_id IN ({','.join(['?'] * len(team_ids))})")
+            params.extend(team_ids)
     if filters.get("discipline"):
         clauses.append("details.discipline=?"); params.append(filters["discipline"])
     if filters.get("disciplines"):

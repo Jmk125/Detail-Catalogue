@@ -36,12 +36,20 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
 
-for (const id of ["librarySearch", "filterDesignTeam", "filterTag", "filterCsi", "filterBookmarked"]) {
+for (const id of ["librarySearch", "filterTag", "filterCsi", "filterBookmarked"]) {
   $(id).addEventListener("input", debounce(loadLibrary, 250));
   $(id).addEventListener("change", loadLibrary);
 }
-for (const id of ["filterProjects", "filterDisciplines"]) {
+for (const id of ["filterProjects", "filterDesignTeams", "filterDisciplines"]) {
   $(id).addEventListener("change", loadLibrary);
+}
+
+for (const menu of document.querySelectorAll("details.multi-filter")) {
+  let hideTimer = null;
+  menu.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+  menu.addEventListener("mouseleave", () => {
+    hideTimer = setTimeout(() => menu.removeAttribute("open"), 300);
+  });
 }
 
 const dropZone = $("dropZone");
@@ -650,18 +658,40 @@ async function loadDetails() {
   for (const d of pageDetails) div.appendChild(detailCard(d, true));
 }
 
-function detailCard(d, compact = false) {
+function detailCard(d, compact = false, list = false) {
   const card = document.createElement("div");
-  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "");
-  const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "");
   const hasNote = Boolean((d.notes || "").trim());
   const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
-  card.innerHTML = `
-    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}</div>
-    <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
-    <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
-    <small>${escapeHtml(d.discipline || "unknown")}</small>
-  `;
+  const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}</div>`;
+
+  if (list) {
+    const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
+    const numbers = [d.sheet_number ? `Sheet ${d.sheet_number}` : "", d.detail_number ? `Detail ${d.detail_number}` : ""].filter(Boolean).join(" · ");
+    const csi = (d.csi_divisions || []).join(", ");
+    const summary = d.summary || d.searchable_description || "";
+    card.innerHTML = `
+      ${thumb}
+      <div class="list-card-info">
+        <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong>
+        <small>${escapeHtml(d.project_name || "Unnamed project")}${d.design_team ? ` — ${escapeHtml(d.design_team)}` : ""}</small>
+        <small>${escapeHtml(d.discipline || "unknown")}${numbers ? ` · ${escapeHtml(numbers)}` : ""}</small>
+        ${summary ? `<p class="list-summary">${escapeHtml(summary)}</p>` : ""}
+        ${tags ? `<div class="list-tags">${tags}</div>` : ""}
+        <div class="list-meta">
+          ${csi ? `<small><span class="meta-label">CSI:</span> ${escapeHtml(csi)}</small>` : ""}
+          ${d.assembly_system_type ? `<small><span class="meta-label">Assembly/System:</span> ${escapeHtml(d.assembly_system_type)}</small>` : ""}
+        </div>
+      </div>
+    `;
+  } else {
+    card.innerHTML = `
+      ${thumb}
+      <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
+      <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
+      <small>${escapeHtml(d.discipline || "unknown")}</small>
+    `;
+  }
   card.querySelector(".bookmark-badge").addEventListener("click", async (e) => {
     e.stopPropagation();
     await toggleBookmark(d);
@@ -753,6 +783,11 @@ async function loadLibraryFacets() {
     (facets.projects || []).map(project => ({ value: project.id, label: project.project_name || "Unnamed project" })),
     "No projects yet"
   );
+  renderCheckboxOptions(
+    "filterDesignTeams",
+    (facets.design_teams || []).map(team => ({ value: team.id, label: team.name })),
+    "No design teams yet"
+  );
   const standardDisciplines = ["architectural", "structural", "civil", "mechanical", "electrical", "plumbing", "fire protection", "technology/security", "unknown"];
   const facetDisciplines = (facets.disciplines || []).map(item => typeof item === "string" ? item : item.discipline).filter(Boolean);
   const disciplines = Array.from(new Set([...standardDisciplines, ...facetDisciplines]));
@@ -779,7 +814,7 @@ async function loadLibrary() {
   const params = new URLSearchParams({
     q: $("librarySearch").value || "",
     project_ids: selectedCheckboxValues("filterProjects").join(","),
-    design_team: $("filterDesignTeam").value || "",
+    design_teams: selectedCheckboxValues("filterDesignTeams").join(","),
     disciplines: selectedCheckboxValues("filterDisciplines").join(","),
     tag: $("filterTag").value || "",
     csi: $("filterCsi").value || "",
@@ -792,7 +827,7 @@ async function loadLibrary() {
   div.className = libraryGrid ? "library-grid" : "library-list";
   div.innerHTML = "";
   if (!data.details.length) { div.textContent = "No details found yet."; return; }
-  for (const d of data.details) div.appendChild(detailCard(d));
+  for (const d of data.details) div.appendChild(detailCard(d, false, !libraryGrid));
 }
 
 async function openDetail(id) {
