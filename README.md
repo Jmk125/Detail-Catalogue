@@ -1,4 +1,4 @@
-# Detail Harvester
+# Detail Catalogue
 
 Local FastAPI web app for extracting, reviewing, saving, and searching construction drawing details from PDF drawing sets.
 

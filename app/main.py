@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import DATA_ROOT, init_db
-from .models import ApproveSheetRequest, DetailUpdateRequest, SkipSheetRequest
+from .models import ApproveSheetRequest, DetailUpdateRequest, RedetectSheetRequest, SkipSheetRequest
 from .pdf_tools import count_pdf_pages
 from .processing import enqueue_project_processing
 from .settings import get_settings
@@ -28,6 +28,7 @@ from .storage import (
     make_project_zip,
     process_pending_ai_jobs,
     project_dir,
+    redetect_page_boxes,
     rescan_detail,
     save_approved_crops,
     skip_page,
@@ -36,7 +37,7 @@ from .storage import (
 
 init_db()
 
-app = FastAPI(title="Detail Harvester")
+app = FastAPI(title="Detail Catalogue")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.mount("/data", StaticFiles(directory=str(DATA_ROOT)), name="data")
 
@@ -118,6 +119,17 @@ def next_ready_page(project_id: str, after_index: int = Query(-1)):
     return {"page": page, "processing_status": get_project_status(project_id)}
 
 
+@app.post("/api/redetect-sheet")
+def redetect_sheet(req: RedetectSheetRequest):
+    try:
+        boxes = redetect_page_boxes(req.project_id, req.page_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"boxes": boxes, "processing_status": get_project_status(req.project_id)}
+
+
 @app.post("/api/approve-sheet")
 def approve_sheet(req: ApproveSheetRequest, background_tasks: BackgroundTasks):
     boxes = [b.model_dump() for b in req.boxes]
@@ -148,14 +160,16 @@ def get_details(project_id: str):
 @app.get("/api/library/search")
 def library_search(
     project: str = "",
+    project_ids: str = "",
     design_team: str = "",
     discipline: str = "",
+    disciplines: str = "",
     csi: str = "",
     tag: str = "",
     q: str = "",
     bookmarked: str = "",
 ):
-    return {"details": list_details(filters={"project": project, "design_team": design_team, "discipline": discipline, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
+    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
 
 
 @app.get("/api/library/facets")

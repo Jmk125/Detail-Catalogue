@@ -10,6 +10,7 @@ from PIL import Image
 
 from .ai_tagging import build_ai_prompt_context, get_ai_provider
 from .database import PROJECTS_ROOT, connect, json_loads, row_to_dict, utc_now
+from .detector import detect_candidate_detail_boxes
 from .settings import StorageSettings, get_settings
 
 
@@ -250,6 +251,30 @@ def cleanup_page_image(project_id: str, image_rel: str | None, settings: Storage
         path.unlink()
 
 
+def redetect_page_boxes(project_id: str, page_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT image_path, status FROM pages WHERE project_id=? AND id=?",
+            (project_id, page_id),
+        ).fetchone()
+        if not row:
+            raise FileNotFoundError("Page not found")
+        if row["status"] != "ready":
+            raise ValueError("Only ready, unapproved pages can be re-detected")
+        image_rel = row["image_path"]
+
+    if not image_rel:
+        raise FileNotFoundError("Rendered page image is missing")
+    image_path = project_dir(project_id) / image_rel
+    if not image_path.exists():
+        raise FileNotFoundError("Rendered page image is not available")
+
+    boxes = detect_candidate_detail_boxes(image_path)
+    with connect() as conn:
+        conn.execute("UPDATE pages SET boxes_json=?, updated_at=? WHERE id=?", (json.dumps(boxes), utc_now(), page_id))
+    return boxes
+
+
 def save_crop_image(crop: Image.Image, path: Path, settings: StorageSettings) -> None:
     fmt = settings.normalized_format()
     if crop.width > settings.crop_max_width:
@@ -439,10 +464,20 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         clauses.append("details.project_id=?"); params.append(project_id)
     if filters.get("project"):
         clauses.append("projects.project_name LIKE ?"); params.append(f"%{filters['project']}%")
+    if filters.get("project_ids"):
+        project_ids = [p.strip() for p in filters["project_ids"].split(",") if p.strip()]
+        if project_ids:
+            clauses.append(f"details.project_id IN ({','.join(['?'] * len(project_ids))})")
+            params.extend(project_ids)
     if filters.get("design_team"):
         clauses.append("dt.name LIKE ?"); params.append(f"%{filters['design_team']}%")
     if filters.get("discipline"):
         clauses.append("details.discipline=?"); params.append(filters["discipline"])
+    if filters.get("disciplines"):
+        disciplines = [d.strip() for d in filters["disciplines"].split(",") if d.strip()]
+        if disciplines:
+            clauses.append(f"details.discipline IN ({','.join(['?'] * len(disciplines))})")
+            params.extend(disciplines)
     if filters.get("tag"):
         clauses.append("details.tags_json LIKE ?"); params.append(f"%{filters['tag']}%")
     if filters.get("bookmarked") in {"1", "true", "yes"}:

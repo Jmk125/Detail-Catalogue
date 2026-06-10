@@ -21,6 +21,7 @@ $("nextBtn").addEventListener("click", () => changePage(1));
 $("fitBtn").addEventListener("click", fitToView);
 $("actualBtn").addEventListener("click", () => setZoom(1.0));
 $("addBoxBtn").addEventListener("click", addBox);
+$("redetectBtn").addEventListener("click", redetectSheet);
 $("deleteBtn").addEventListener("click", deleteSelected);
 $("approveBtn").addEventListener("click", approveSheet);
 $("skipBtn").addEventListener("click", skipSheet);
@@ -32,8 +33,11 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
 
-for (const id of ["librarySearch", "filterProject", "filterDesignTeam", "filterDiscipline", "filterTag", "filterCsi", "filterBookmarked"]) {
+for (const id of ["librarySearch", "filterDesignTeam", "filterTag", "filterCsi", "filterBookmarked"]) {
   $(id).addEventListener("input", debounce(loadLibrary, 250));
+  $(id).addEventListener("change", loadLibrary);
+}
+for (const id of ["filterProjects", "filterDisciplines"]) {
   $(id).addEventListener("change", loadLibrary);
 }
 
@@ -42,6 +46,7 @@ const fileInput = $("pdfFile");
 const canvasWrap = $("canvasWrap");
 
 loadDesignTeams();
+loadLibraryFacets();
 loadLibrary();
 
 dropZone.addEventListener("click", () => fileInput.click());
@@ -87,7 +92,7 @@ function showTab(tabId) {
   for (const btn of document.querySelectorAll(".tab-btn")) {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
   }
-  if (tabId === "libraryTab") loadLibrary();
+  if (tabId === "libraryTab") { loadLibraryFacets(); loadLibrary(); }
 }
 
 async function loadDesignTeams() {
@@ -134,6 +139,7 @@ async function uploadPdf() {
   startPolling();
   await loadNextReady(-1);
   await loadDesignTeams();
+  await loadLibraryFacets();
 }
 
 function startPolling() {
@@ -160,7 +166,7 @@ async function refreshProjectStatus() {
       pageIndex = ready.page_index;
       loadPage();
     } else {
-      showProcessingNext();
+      showProcessingNext(data.processing_status);
     }
   }
   if (data.processing_status.pages_processing === 0 && data.processing_status.ai_jobs.pending === 0 && data.processing_status.ai_jobs.running === 0) {
@@ -187,19 +193,27 @@ async function loadNextReady(afterIndex) {
   if (!res.ok) return showProcessingNext();
   const data = await res.json();
   renderProcessingStatus(data.processing_status);
-  if (!data.page) return showProcessingNext();
+  if (!data.page) return showProcessingNext(data.processing_status);
   const idx = manifest.pages.findIndex(p => p.id === data.page.id);
   if (idx >= 0) manifest.pages[idx] = data.page;
   pageIndex = data.page.page_index;
   loadPage();
 }
 
-function showProcessingNext() {
+function showProcessingNext(status = manifest?.processing_status) {
   loadedPageId = null;
-  $("sheetInfo").textContent = "Processing next sheet...";
   $("sheetImage").removeAttribute("src");
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
+  const pagesReady = status?.pages_ready || 0;
+  const pagesProcessing = status?.pages_processing || 0;
+  const remainingReviewable = pagesReady + pagesProcessing;
+  if (manifest && remainingReviewable === 0) {
+    $("sheetInfo").textContent = "All uploaded drawings have been reviewed.";
+    $("detailsList").innerHTML = `<div class="done-state"><strong>Drawing review complete.</strong><br>${status?.pages_approved || 0} sheets approved, ${status?.pages_skipped || 0} sheets skipped, ${status?.pages_failed || 0} failed. AI tagging may continue in the background.</div>`;
+    return;
+  }
+  $("sheetInfo").textContent = "Processing next sheet...";
   $("detailsList").textContent = "No ready sheets yet. Page rendering/detection is continuing in the background.";
 }
 
@@ -558,6 +572,38 @@ function deleteSelected() {
 }
 function deleteSelected() { if (!selectedId) return; boxes = boxes.filter(b => b.id !== selectedId); selectedId = null; currentMergeTargetId = null; renderBoxes(); renderBoxList(); }
 
+async function redetectSheet() {
+  if (!projectId) return;
+  const page = currentPage();
+  if (!page || page.status !== "ready") {
+    alert("Wait until a sheet is ready before re-detecting boxes.");
+    return;
+  }
+  if (!confirm("Re-run automatic box detection for this sheet? This will replace the current unapproved boxes on the sheet.")) return;
+  const btn = $("redetectBtn");
+  btn.disabled = true;
+  btn.textContent = "Detecting...";
+  try {
+    const res = await fetch("/api/redetect-sheet", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ project_id: projectId, page_id: page.id })
+    });
+    if (!res.ok) { alert(await res.text()); return; }
+    const data = await res.json();
+    boxes = applyDeletedBoxPatterns(structuredClone(data.boxes || []), page);
+    page.boxes = structuredClone(boxes);
+    selectedId = null;
+    currentMergeTargetId = null;
+    renderBoxes();
+    renderBoxList();
+    $("sheetInfo").textContent = `${manifest.project_name || "Unnamed Project"} — ${page.source_filename || "PDF"} page ${page.page_number} — batch page ${page.page_index + 1} of ${manifest.pages.length} — ${boxes.length} candidate boxes`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Re-detect Boxes";
+  }
+}
+
 async function approveSheet() {
   if (!projectId) return;
   const page = manifest.pages.find(p => p.page_index === pageIndex);
@@ -573,6 +619,7 @@ async function approveSheet() {
   renderProcessingStatus(data.processing_status);
   loadDetails();
   loadLibrary();
+  await loadLibraryFacets();
   await loadNextReady(page.page_index);
 }
 
@@ -625,16 +672,52 @@ async function toggleBookmark(detail) {
     body: JSON.stringify({bookmarked: !detail.bookmarked})
   });
   if (!res.ok) { alert(await res.text()); return; }
+  await loadLibraryFacets();
   await loadLibrary();
   if (projectId) await loadDetails();
+}
+
+function selectedCheckboxValues(containerId) {
+  return Array.from($(containerId).querySelectorAll("input[type=checkbox]:checked")).map(input => input.value);
+}
+
+async function loadLibraryFacets() {
+  const res = await fetch("/api/library/facets");
+  if (!res.ok) return;
+  const facets = await res.json();
+  renderCheckboxOptions(
+    "filterProjects",
+    (facets.projects || []).map(project => ({ value: project.id, label: project.project_name || "Unnamed project" })),
+    "No projects yet"
+  );
+  const standardDisciplines = ["architectural", "structural", "civil", "mechanical", "electrical", "plumbing", "fire protection", "technology/security", "unknown"];
+  const facetDisciplines = (facets.disciplines || []).map(item => typeof item === "string" ? item : item.discipline).filter(Boolean);
+  const disciplines = Array.from(new Set([...standardDisciplines, ...facetDisciplines]));
+  renderCheckboxOptions("filterDisciplines", disciplines.map(value => ({ value, label: value })), "No disciplines yet");
+}
+
+function renderCheckboxOptions(containerId, options, emptyLabel) {
+  const container = $(containerId);
+  const selected = new Set(selectedCheckboxValues(containerId));
+  container.innerHTML = "";
+  if (!options.length) {
+    container.innerHTML = `<span class="empty-filter">${escapeHtml(emptyLabel)}</span>`;
+    return;
+  }
+  for (const option of options) {
+    const id = `${containerId}_${String(option.value).replace(/[^a-z0-9_-]/gi, "_")}`;
+    const label = document.createElement("label");
+    label.innerHTML = `<input id="${escapeAttr(id)}" type="checkbox" value="${escapeAttr(option.value)}" ${selected.has(String(option.value)) ? "checked" : ""} /> ${escapeHtml(option.label)}`;
+    container.appendChild(label);
+  }
 }
 
 async function loadLibrary() {
   const params = new URLSearchParams({
     q: $("librarySearch").value || "",
-    project: $("filterProject").value || "",
+    project_ids: selectedCheckboxValues("filterProjects").join(","),
     design_team: $("filterDesignTeam").value || "",
-    discipline: $("filterDiscipline").value || "",
+    disciplines: selectedCheckboxValues("filterDisciplines").join(","),
     tag: $("filterTag").value || "",
     csi: $("filterCsi").value || "",
     bookmarked: $("filterBookmarked").checked ? "1" : ""
@@ -734,6 +817,8 @@ async function saveDetailEdits(id) {
   const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
   if (!res.ok) { alert(await res.text()); return null; }
   const updated = await res.json();
+  await loadLibraryFacets();
+  await loadLibraryFacets();
   await loadLibrary();
   if (projectId) await loadDetails();
   return updated;

@@ -2,13 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Detail Harvester</title>
+  <title>Detail Catalogue</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header>
     <div>
-      <h1>Detail Harvester</h1>
+      <h1>Detail Catalogue</h1>
       <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
     </div>
     <nav class="tabs" aria-label="Primary">
@@ -70,6 +70,7 @@
           <button id="fitBtn">Fit</button>
           <button id="actualBtn">100%</button>
           <button id="addBoxBtn">Add Box Fallback</button>
+          <button id="redetectBtn">Re-detect Boxes</button>
           <button id="deleteBtn">Delete Selected</button>
           <button id="approveBtn">Approve Sheet</button>
           <button id="skipBtn">Skip Sheet</button>
@@ -114,20 +115,15 @@
       </div>
       <div class="library-filters">
         <input id="librarySearch" type="search" placeholder="Search title, summary, description, sheet/detail #" />
-        <input id="filterProject" type="text" placeholder="Project" />
+        <details class="multi-filter" id="projectFilterMenu">
+          <summary>Projects</summary>
+          <div id="filterProjects" class="multi-filter-options"></div>
+        </details>
         <input id="filterDesignTeam" type="text" placeholder="Design team" />
-        <select id="filterDiscipline">
-          <option value="">Any discipline</option>
-          <option value="architectural">Architectural</option>
-          <option value="structural">Structural</option>
-          <option value="civil">Civil</option>
-          <option value="mechanical">Mechanical</option>
-          <option value="electrical">Electrical</option>
-          <option value="plumbing">Plumbing</option>
-          <option value="fire protection">Fire Protection</option>
-          <option value="technology/security">Technology/Security</option>
-          <option value="unknown">Unknown</option>
-        </select>
+        <details class="multi-filter" id="disciplineFilterMenu">
+          <summary>Disciplines</summary>
+          <div id="filterDisciplines" class="multi-filter-options"></div>
+        </details>
         <input id="filterTag" type="text" placeholder="Tag" />
         <input id="filterCsi" type="text" placeholder="CSI division" />
         <label class="check-filter"><input id="filterBookmarked" type="checkbox" /> Bookmarked</label>

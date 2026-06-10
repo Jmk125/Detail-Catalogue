@@ -23,6 +23,11 @@ class SkipSheetRequest(BaseModel):
     page_id: int
 
 
+class RedetectSheetRequest(BaseModel):
+    project_id: str
+    page_id: int
+
+
 class DetailUpdateRequest(BaseModel):
     project_name: Optional[str] = None
     design_team: Optional[str] = None
