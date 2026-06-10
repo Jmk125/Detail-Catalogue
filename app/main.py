@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .database import DATA_ROOT, init_db
 from .models import ApproveSheetRequest, DetailUpdateRequest, RedetectSheetRequest, SkipSheetRequest
 from .pdf_tools import count_pdf_pages
-from .processing import enqueue_project_processing
+from .processing import enqueue_project_processing, recover_stalled_processing
 from .settings import get_settings
 from .storage import (
     add_page_record,
@@ -42,6 +42,7 @@ from .storage import (
 )
 
 init_db()
+recover_stalled_processing()
 
 app = FastAPI(title="Detail Catalogue")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
