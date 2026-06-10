@@ -542,33 +542,47 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         "assembly_system_type",
         "bookmarked",
     }
-    assignments = []
-    params = []
+    detail_assignments = []
+    detail_params = []
     for key in allowed:
         if key in updates:
             value = int(bool(updates[key])) if key == "bookmarked" else updates[key]
-            assignments.append(f"{key}=?")
-            params.append(value)
+            detail_assignments.append(f"{key}=?")
+            detail_params.append(value)
     if "tags" in updates and updates["tags"] is not None:
         tags = [str(t).strip() for t in updates["tags"] if str(t).strip()]
-        assignments.append("tags_json=?")
-        params.append(json.dumps(tags))
+        detail_assignments.append("tags_json=?")
+        detail_params.append(json.dumps(tags))
     else:
         tags = None
 
-    if not assignments:
+    project_assignments = []
+    project_params = []
+    if "project_name" in updates:
+        project_assignments.append("project_name=?")
+        project_params.append((updates.get("project_name") or "").strip())
+    if "design_team" in updates:
+        project_assignments.append("design_team_id=?")
+        project_params.append(get_or_create_design_team(updates.get("design_team")))
+
+    if not detail_assignments and not project_assignments:
         return get_detail(detail_id)
 
-    assignments.append("updated_at=?")
-    params.append(utc_now())
-    params.append(detail_id)
+    now = utc_now()
     with connect() as conn:
-        exists = conn.execute("SELECT id FROM details WHERE id=?", (detail_id,)).fetchone()
-        if not exists:
+        row = conn.execute("SELECT id, project_id FROM details WHERE id=?", (detail_id,)).fetchone()
+        if not row:
             return None
-        conn.execute(f"UPDATE details SET {', '.join(assignments)} WHERE id=?", params)
-        if tags is not None:
-            _sync_detail_tags(conn, detail_id, tags)
+        if detail_assignments:
+            detail_assignments.append("updated_at=?")
+            detail_params.append(now)
+            detail_params.append(detail_id)
+            conn.execute(f"UPDATE details SET {', '.join(detail_assignments)} WHERE id=?", detail_params)
+            if tags is not None:
+                _sync_detail_tags(conn, detail_id, tags)
+        if project_assignments:
+            project_params.append(row["project_id"])
+            conn.execute(f"UPDATE projects SET {', '.join(project_assignments)} WHERE id=?", project_params)
     return get_detail(detail_id)
 
 

@@ -598,3 +598,41 @@ aside {
   .library-filters { grid-template-columns: 1fr 1fr; }
   .detail-editor { grid-template-columns: 1fr; }
 }
+
+/* Detail viewing refinements */
+.modal {
+  padding: 16px;
+}
+
+.modal-card.detail-editor-card {
+  width: min(1700px, 98vw);
+  max-height: 96vh;
+}
+
+.detail-editor {
+  grid-template-columns: minmax(620px, 1.6fr) minmax(420px, .8fr);
+}
+
+.detail-large {
+  width: 100%;
+  max-height: 78vh;
+  object-fit: contain;
+}
+
+.bookmark-badge {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.bookmark-badge:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, .22);
+  background: rgba(15, 23, 42, 0.90);
+}
+
+@media (max-width: 1300px) {
+  .detail-editor { grid-template-columns: 1fr; }
+  .detail-large { max-height: 68vh; }
+}

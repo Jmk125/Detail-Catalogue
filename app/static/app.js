@@ -605,7 +605,7 @@ function detailCard(d, compact = false) {
   card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "");
   const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
   card.innerHTML = `
-    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><span class="bookmark-badge">${d.bookmarked ? "★" : "☆"}</span></div>
+    <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button></div>
     <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
     <small>${escapeHtml(d.project_name || "Unnamed project")} · ${escapeHtml(d.design_team || "No design team")} · ${escapeHtml(d.discipline || "unknown")}</small><br>
     <small>${escapeHtml(d.source_filename || "PDF")} page ${d.page_number || "?"} · Detail ${escapeHtml(d.detail_number || "?")} · Sheet ${escapeHtml(d.sheet_number || "?")}</small>
@@ -613,8 +613,23 @@ function detailCard(d, compact = false) {
     <div>${tags}</div>
     <small>AI: ${escapeHtml(d.ai_status || "pending")}</small>
   `;
+  card.querySelector(".bookmark-badge").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await toggleBookmark(d);
+  });
   card.addEventListener("click", () => openDetail(d.id));
   return card;
+}
+
+async function toggleBookmark(detail) {
+  const res = await fetch(`/api/details/${detail.id}`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({bookmarked: !detail.bookmarked})
+  });
+  if (!res.ok) { alert(await res.text()); return; }
+  await loadLibrary();
+  if (projectId) await loadDetails();
 }
 
 async function loadLibrary() {
@@ -662,6 +677,10 @@ function renderDetailEditor(d) {
           <h2>Edit Detail</h2>
           <label class="bookmark-toggle"><input id="editBookmarked" type="checkbox" ${d.bookmarked ? "checked" : ""}/> ★ Bookmark</label>
         </div>
+        <div class="form-grid-2">
+          <label>Project Name<input id="editProjectName" type="text" value="${escapeAttr(d.project_name || "")}" /></label>
+          <label>Design Team<input id="editDesignTeam" type="text" value="${escapeAttr(d.design_team || "")}" /></label>
+        </div>
         <label>Detail Name<input id="editTitle" type="text" value="${escapeAttr(d.detail_title || "")}" placeholder="Untitled detail" /></label>
         <div class="form-grid-2">
           <label>Detail #<input id="editDetailNumber" type="text" value="${escapeAttr(d.detail_number || "")}" /></label>
@@ -699,6 +718,8 @@ function disciplineOptions(selected) {
 
 async function saveDetailEdits(id) {
   const payload = {
+    project_name: $("editProjectName").value.trim(),
+    design_team: $("editDesignTeam").value.trim(),
     detail_title: $("editTitle").value.trim() || null,
     detail_number: $("editDetailNumber").value.trim() || null,
     sheet_number: $("editSheetNumber").value.trim() || null,

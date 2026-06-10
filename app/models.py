@@ -24,6 +24,8 @@ class SkipSheetRequest(BaseModel):
 
 
 class DetailUpdateRequest(BaseModel):
+    project_name: Optional[str] = None
+    design_team: Optional[str] = None
     detail_title: Optional[str] = None
     detail_number: Optional[str] = None
     sheet_number: Optional[str] = None
