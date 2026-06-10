@@ -165,6 +165,7 @@ def library_search(
     project: str = "",
     project_ids: str = "",
     design_team: str = "",
+    design_teams: str = "",
     discipline: str = "",
     disciplines: str = "",
     csi: str = "",
@@ -172,7 +173,7 @@ def library_search(
     q: str = "",
     bookmarked: str = "",
 ):
-    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
+    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "design_teams": design_teams, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
 
 
 @app.get("/api/library/facets")
