@@ -55,13 +55,14 @@ def list_design_teams(q: str = "") -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None) -> None:
+def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None, designers: list[dict[str, str]] | None = None) -> None:
     settings = settings or get_settings()
     pdir = project_dir(project_id)
     (pdir / "sources").mkdir(parents=True, exist_ok=True)
     (pdir / "pages").mkdir(parents=True, exist_ok=True)
     (pdir / "crops").mkdir(parents=True, exist_ok=True)
     (pdir / "thumbs").mkdir(parents=True, exist_ok=True)
+    (pdir / "sheet_crops").mkdir(parents=True, exist_ok=True)
     design_team_id = get_or_create_design_team(design_team)
     with connect() as conn:
         conn.execute(
@@ -71,6 +72,30 @@ def create_project_record(project_id: str, project_name: str, design_team: str, 
             """,
             (project_id, project_name.strip(), design_team_id, discipline or "unknown", utc_now(), json.dumps(settings.as_dict())),
         )
+    set_project_designers(project_id, designers or [])
+
+
+def set_project_designers(project_id: str, designers: list[dict[str, str]]) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM project_designers WHERE project_id=?", (project_id,))
+        for d in designers:
+            discipline = (d.get("discipline") or "").strip().lower()
+            firm_name = (d.get("firm_name") or "").strip()
+            if not discipline or not firm_name:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO project_designers(project_id, discipline, firm_name) VALUES(?, ?, ?)",
+                (project_id, discipline, firm_name),
+            )
+
+
+def get_project_designers(project_id: str) -> list[dict[str, str]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT discipline, firm_name FROM project_designers WHERE project_id=? ORDER BY discipline",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def add_source_file(project_id: str, source_file_id: str, filename: str, storage_rel_path: str, page_count: int) -> None:
@@ -141,6 +166,7 @@ def page_to_api(row: Any) -> dict[str, Any]:
         "pdf_height": d["pdf_height"],
         "zoom": d["zoom"],
         "boxes": json_loads(d["boxes_json"], []),
+        "sheet_box": json_loads(d.get("sheet_box_json"), None),
         "approved": d["status"] == "approved",
         "approved_box_count": d["approved_box_count"],
         "error": d["error"],
@@ -176,6 +202,8 @@ def get_project_manifest(project_id: str) -> dict[str, Any]:
             "project_name": p["project_name"],
             "design_team": p["design_team"],
             "discipline": p["discipline"],
+            "designers": get_project_designers(project_id),
+            "last_sheet_box": json_loads(p.get("last_sheet_box_json"), None),
             "upload_date": p["upload_date"],
             "status": p["status"],
             "settings": json_loads(p["settings_json"], {}),
@@ -299,7 +327,24 @@ def save_thumbnail(crop_path: Path, thumb_path: Path) -> None:
         img.save(thumb_path, format="WEBP", quality=70, optimize=True)
 
 
-def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None) -> list[dict[str, Any]]:
+def save_sheet_box_crop(project_id: str, page_id: int, page_global_index: int, page_img_path: Path, sheet_box: dict[str, Any]) -> str | None:
+    """Crop the sheet-number box from the page image, OCR it via the AI provider, and return the sheet number."""
+    x = int(round(sheet_box["x"])); y = int(round(sheet_box["y"])); w = int(round(sheet_box["w"])); h = int(round(sheet_box["h"]))
+    with Image.open(page_img_path) as img:
+        x0 = max(0, x); y0 = max(0, y); x1 = min(img.width, x + w); y1 = min(img.height, y + h)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        crop = img.crop((x0, y0, x1, y1))
+        crop_rel = f"sheet_crops/page_{page_global_index + 1:04d}_sheetnum.png"
+        crop_path = project_dir(project_id) / crop_rel
+        crop.save(crop_path, format="PNG")
+    try:
+        return get_ai_provider().read_sheet_number(crop_path)
+    except Exception:
+        return None
+
+
+def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     with connect() as conn:
         page = conn.execute(
@@ -325,6 +370,10 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
     if not page_img_path.exists():
         raise FileNotFoundError("Rendered page image has already been cleaned up")
 
+    sheet_number = None
+    if sheet_box:
+        sheet_number = save_sheet_box_crop(project_id, page_id, page["global_index"], page_img_path, sheet_box)
+
     records = []
     crop_ext = settings.extension()
     with Image.open(page_img_path) as img:
@@ -348,10 +397,10 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
                 conn.execute(
                     """
                     INSERT INTO details(id, project_id, page_id, source_file_id, crop_image_path, thumbnail_path,
-                        crop_box_json, source_box_id, discipline, ai_status, created_at, updated_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                        crop_box_json, source_box_id, discipline, sheet_number, ai_status, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                     """,
-                    (detail_id, project_id, page_id, page["source_file_id"], crop_rel, thumb_rel, json.dumps(crop_box), box.get("id"), page["discipline"] or "unknown", now, now),
+                    (detail_id, project_id, page_id, page["source_file_id"], crop_rel, thumb_rel, json.dumps(crop_box), box.get("id"), page["discipline"] or "unknown", sheet_number, now, now),
                 )
                 conn.execute(
                     "INSERT INTO ai_jobs(id, detail_id, status, provider, created_at, updated_at) VALUES(?, ?, 'pending', 'stub', ?, ?)",
@@ -361,9 +410,11 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
 
     with connect() as conn:
         conn.execute(
-            "UPDATE pages SET status='approved', boxes_json=?, approved_box_count=?, updated_at=? WHERE id=?",
-            (json.dumps(boxes), len(records), utc_now(), page_id),
+            "UPDATE pages SET status='approved', boxes_json=?, sheet_box_json=?, approved_box_count=?, updated_at=? WHERE id=?",
+            (json.dumps(boxes), json.dumps(sheet_box) if sheet_box else None, len(records), utc_now(), page_id),
         )
+        if sheet_box:
+            conn.execute("UPDATE projects SET last_sheet_box_json=? WHERE id=?", (json.dumps(sheet_box), project_id))
     cleanup_page_image(project_id, image_rel, settings)
     return records
 
@@ -420,7 +471,8 @@ def process_pending_ai_jobs(limit: int = 20) -> int:
             with connect() as conn:
                 conn.execute(
                     """
-                    UPDATE details SET detail_title=?, detail_number=?, sheet_number=?, discipline=?, csi_divisions_json=?,
+                    UPDATE details SET detail_title=?, detail_number=?,
+                        sheet_number=COALESCE(sheet_number, ?), discipline=?, csi_divisions_json=?,
                         tags_json=?, summary=?, assembly_system_type=?, searchable_description=?, confidence_score=?,
                         warnings_json=?, ai_status='complete', updated_at=? WHERE id=?
                     """,
@@ -498,6 +550,27 @@ def detail_row_to_api(row: Any) -> dict[str, Any]:
     return d
 
 
+def _attach_designers(details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    project_ids = {d["project_id"] for d in details}
+    if not project_ids:
+        return details
+    with connect() as conn:
+        placeholders = ",".join(["?"] * len(project_ids))
+        rows = conn.execute(
+            f"SELECT project_id, discipline, firm_name FROM project_designers WHERE project_id IN ({placeholders})",
+            list(project_ids),
+        ).fetchall()
+    by_project: dict[str, list[dict[str, str]]] = {}
+    for r in rows:
+        by_project.setdefault(r["project_id"], []).append({"discipline": r["discipline"], "firm_name": r["firm_name"]})
+    for d in details:
+        designers = by_project.get(d["project_id"], [])
+        d["designers"] = designers
+        match = next((x["firm_name"] for x in designers if x["discipline"] == (d.get("discipline") or "").lower()), None)
+        d["discipline_designer"] = match
+    return details
+
+
 def list_details(project_id: str | None = None, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
     filters = filters or {}
     clauses = []
@@ -512,7 +585,8 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
             clauses.append(f"details.project_id IN ({','.join(['?'] * len(project_ids))})")
             params.extend(project_ids)
     if filters.get("design_team"):
-        clauses.append("dt.name LIKE ?"); params.append(f"%{filters['design_team']}%")
+        clauses.append("(dt.name LIKE ? OR EXISTS (SELECT 1 FROM project_designers pd WHERE pd.project_id=projects.id AND pd.firm_name LIKE ?))")
+        params.extend([f"%{filters['design_team']}%", f"%{filters['design_team']}%"])
     if filters.get("design_teams"):
         team_ids = [t.strip() for t in filters["design_teams"].split(",") if t.strip()]
         if team_ids:
@@ -533,8 +607,12 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         clauses.append("details.csi_divisions_json LIKE ?"); params.append(f"%{filters['csi']}%")
     if filters.get("q"):
         q = f"%{filters['q']}%"
-        clauses.append("(details.detail_title LIKE ? OR details.summary LIKE ? OR details.searchable_description LIKE ? OR details.detail_number LIKE ? OR details.sheet_number LIKE ? OR details.notes LIKE ?)")
-        params.extend([q, q, q, q, q, q])
+        clauses.append(
+            "(details.detail_title LIKE ? OR details.summary LIKE ? OR details.searchable_description LIKE ? "
+            "OR details.detail_number LIKE ? OR details.sheet_number LIKE ? OR details.notes LIKE ? "
+            "OR dt.name LIKE ? OR EXISTS (SELECT 1 FROM project_designers pd WHERE pd.project_id=projects.id AND pd.firm_name LIKE ?))"
+        )
+        params.extend([q, q, q, q, q, q, q, q])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
         rows = conn.execute(
@@ -551,7 +629,7 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
             """,
             params,
         ).fetchall()
-        return [detail_row_to_api(r) for r in rows]
+        return _attach_designers([detail_row_to_api(r) for r in rows])
 
 
 def get_detail(detail_id: str) -> dict[str, Any] | None:
@@ -568,7 +646,9 @@ def get_detail(detail_id: str) -> dict[str, Any] | None:
             """,
             (detail_id,),
         ).fetchone()
-        return detail_row_to_api(row) if row else None
+        if not row:
+            return None
+        return _attach_designers([detail_row_to_api(row)])[0]
 
 
 def _sync_detail_tags(conn, detail_id: str, tags: list[str]) -> None:
@@ -624,7 +704,7 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         project_assignments.append("design_team_id=?")
         project_params.append(get_or_create_design_team(updates.get("design_team")))
 
-    if not detail_assignments and not project_assignments:
+    if not detail_assignments and not project_assignments and "designers" not in updates:
         return get_detail(detail_id)
 
     now = utc_now()
@@ -642,6 +722,8 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         if project_assignments:
             project_params.append(row["project_id"])
             conn.execute(f"UPDATE projects SET {', '.join(project_assignments)} WHERE id=?", project_params)
+    if updates.get("designers") is not None:
+        set_project_designers(row["project_id"], [d if isinstance(d, dict) else d.model_dump() for d in updates["designers"]])
     return get_detail(detail_id)
 
 

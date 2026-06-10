@@ -16,6 +16,12 @@ class ApproveSheetRequest(BaseModel):
     project_id: str
     page_id: int
     boxes: List[Box]
+    sheet_box: Optional[dict] = None
+
+
+class Designer(BaseModel):
+    discipline: str
+    firm_name: str
 
 
 class SkipSheetRequest(BaseModel):
@@ -44,3 +50,4 @@ class DetailUpdateRequest(BaseModel):
     confidence_score: Optional[float] = None
     bookmarked: Optional[bool] = None
     notes: Optional[str] = None
+    designers: Optional[List[Designer]] = None
