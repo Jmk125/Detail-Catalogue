@@ -19,33 +19,36 @@ const $ = (id) => document.getElementById(id);
 
 const DISCIPLINE_VALUES = ["architectural", "structural", "civil", "mechanical", "electrical", "plumbing", "fire protection", "technology/security", "unknown"];
 
-$("addDesignerRowBtn").addEventListener("click", () => addDesignerRow());
+const ENGINEER_DISCIPLINES = ["structural", "civil", "mechanical", "plumbing", "electrical", "technology/security"];
+const ENGINEER_LABELS = {
+  structural: "Structural Engineer",
+  civil: "Civil Engineer",
+  mechanical: "Mechanical Engineer",
+  plumbing: "Plumbing Engineer",
+  electrical: "Electrical Engineer",
+  "technology/security": "Technology Engineer",
+};
 
-function addDesignerRow(discipline = "structural", firmName = "", containerId = "designerRows") {
-  const row = document.createElement("div");
-  row.className = "designer-row";
-  row.innerHTML = `
-    <select class="designer-discipline">${DISCIPLINE_VALUES.filter(v => v !== "unknown").map(v => `<option value="${v}" ${v === discipline ? "selected" : ""}>${v}</option>`).join("")}</select>
-    <input class="designer-firm" type="text" list="firmNameOptions" placeholder="Firm name" value="${escapeAttr(firmName)}" />
-    <button type="button" class="remove-designer-row">×</button>
-  `;
-  row.querySelector(".remove-designer-row").addEventListener("click", () => row.remove());
-  $(containerId).appendChild(row);
+function renderEngineerFields(containerId, designers = []) {
+  $(containerId).innerHTML = ENGINEER_DISCIPLINES.map(discipline => {
+    const existing = designers.find(d => d.discipline === discipline);
+    return `<label>${ENGINEER_LABELS[discipline]}<input type="text" class="designer-firm-fixed" data-discipline="${discipline}" list="firmNameOptions" placeholder="Optional" value="${escapeAttr(existing?.firm_name || "")}" /></label>`;
+  }).join("");
 }
 
 function collectDesigners(containerId = "designerRows") {
-  const rows = $(containerId).querySelectorAll(".designer-row");
+  const inputs = $(containerId).querySelectorAll(".designer-firm-fixed");
   const designers = [];
-  for (const row of rows) {
-    const discipline = row.querySelector(".designer-discipline").value;
-    const firmName = row.querySelector(".designer-firm").value.trim();
-    if (firmName) designers.push({ discipline, firm_name: firmName });
+  for (const input of inputs) {
+    const firmName = input.value.trim();
+    if (firmName) designers.push({ discipline: input.dataset.discipline, firm_name: firmName });
   }
   return designers;
 }
 
+renderEngineerFields("designerRows");
+
 $("prevBtn").addEventListener("click", () => changePage(-1));
-$("nextBtn").addEventListener("click", () => changePage(1));
 $("fitBtn").addEventListener("click", fitToView);
 $("actualBtn").addEventListener("click", () => setZoom(1.0));
 $("addBoxBtn").addEventListener("click", addBox);
@@ -538,6 +541,14 @@ async function loadNextReady(afterIndex) {
   loadPage();
 }
 
+function showSheetLoadingOverlay() {
+  $("sheetLoadingOverlay").classList.remove("hidden");
+}
+
+function hideSheetLoadingOverlay() {
+  $("sheetLoadingOverlay").classList.add("hidden");
+}
+
 function showProcessingNext(status = manifest?.processing_status) {
   loadedPageId = null;
   $("sheetImage").removeAttribute("src");
@@ -547,6 +558,7 @@ function showProcessingNext(status = manifest?.processing_status) {
   const pagesProcessing = status?.pages_processing || 0;
   const remainingReviewable = pagesReady + pagesProcessing;
   if (manifest && remainingReviewable === 0) {
+    hideSheetLoadingOverlay();
     $("sheetInfo").textContent = "All uploaded drawings have been reviewed.";
     $("detailsList").innerHTML = `<div class="done-state"><strong>Drawing review complete.</strong><br>${status?.pages_approved || 0} sheets approved, ${status?.pages_skipped || 0} sheets skipped, ${status?.pages_failed || 0} failed. AI tagging may continue in the background.</div>`;
     return;
@@ -566,6 +578,7 @@ function loadPage() {
   const img = $("sheetImage");
   loadedPageId = null;
   img.onload = () => {
+    hideSheetLoadingOverlay();
     loadedPageId = page.id;
     $("boxLayer").style.width = `${img.naturalWidth}px`;
     $("boxLayer").style.height = `${img.naturalHeight}px`;
@@ -1016,12 +1029,13 @@ async function approveSheet() {
   if (!projectId) return;
   const page = manifest.pages.find(p => p.page_index === pageIndex);
   if (!page) return;
+  showSheetLoadingOverlay();
   const res = await fetch("/api/approve-sheet", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ project_id: projectId, page_id: page.id, boxes, sheet_box: sheetBox })
   });
-  if (!res.ok) { alert(await res.text()); return; }
+  if (!res.ok) { hideSheetLoadingOverlay(); alert(await res.text()); return; }
   const data = await res.json();
   page.status = "approved"; page.boxes = structuredClone(boxes); page.approved = true;
   page.sheet_box = structuredClone(sheetBox);
@@ -1037,8 +1051,9 @@ async function skipSheet() {
   if (!projectId) return;
   const page = manifest.pages.find(p => p.page_index === pageIndex);
   if (!page) return;
+  showSheetLoadingOverlay();
   const res = await fetch("/api/skip-sheet", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ project_id: projectId, page_id: page.id }) });
-  if (!res.ok) { alert(await res.text()); return; }
+  if (!res.ok) { hideSheetLoadingOverlay(); alert(await res.text()); return; }
   const data = await res.json();
   page.status = "skipped";
   renderProcessingStatus(data.processing_status);
@@ -1244,8 +1259,8 @@ function renderDetailEditor(d) {
         <div class="viewer-toolbar">
           <div class="detail-meta-line">
             <strong>${escapeHtml(d.project_name || "Unnamed project")}</strong>
-            <span>${escapeHtml(d.design_team || "No design team")}</span>
-            ${d.discipline_designer ? `<span>${escapeHtml(d.discipline)} engineer: ${escapeHtml(d.discipline_designer)}</span>` : ""}
+            <span>Architect: ${escapeHtml(d.design_team || "Unknown")}</span>
+            ${(d.designers || []).filter(x => x.discipline !== "architectural" && x.firm_name).map(x => `<span>${escapeHtml(ENGINEER_LABELS[x.discipline] || x.discipline)}: ${escapeHtml(x.firm_name)}</span>`).join("")}
             <span>${escapeHtml(d.source_filename || "PDF")}, page ${d.page_number || "?"}</span>
             <span>AI: ${escapeHtml(d.ai_status || "pending")}</span>
           </div>
@@ -1283,9 +1298,8 @@ function renderDetailEditor(d) {
         <label>Tags<input id="editTags" type="text" value="${escapeAttr((d.tags || []).join(", "))}" placeholder="comma, separated, tags" /></label>
         <label>CSI Divisions<input id="editCsi" type="text" value="${escapeAttr((d.csi_divisions || []).join(", "))}" placeholder="comma, separated CSI divisions" /></label>
         <div class="designers-section">
-          <h3>Designers by Discipline</h3>
-          <div id="editDesignerRows"></div>
-          <button type="button" id="addEditDesignerRowBtn">+ Add Designer</button>
+          <h3>Other Engineers</h3>
+          <div id="editDesignerRows" class="engineer-grid"></div>
         </div>
         <label>Notes<textarea id="editNotes" rows="4" placeholder="Personal notes, e.g. this was a pain to build...">${escapeHtml(d.notes || "")}</textarea></label>
         <label>AI Summary / Description<textarea id="editSummary" rows="5">${escapeHtml(d.summary || "")}</textarea></label>
@@ -1307,11 +1321,7 @@ function renderDetailEditor(d) {
   });
   $("deleteDetailBtn").addEventListener("click", async () => deleteDetailFromEditor(d.id));
   $("rescanDetailBtn").addEventListener("click", async () => rescanDetailFromEditor(d));
-  $("addEditDesignerRowBtn").addEventListener("click", () => addDesignerRow("structural", "", "editDesignerRows"));
-  for (const designer of (d.designers || [])) {
-    if (designer.discipline === "architectural") continue;
-    addDesignerRow(designer.discipline, designer.firm_name, "editDesignerRows");
-  }
+  renderEngineerFields("editDesignerRows", d.designers || []);
   setupDetailViewer();
 }
 

@@ -49,10 +49,9 @@
       </div>
 
       <div class="designers-section">
-        <h3>Designers by Discipline (optional)</h3>
-        <p class="hint">The architect (Design Team above) is added automatically. Add other firms (e.g. structural engineer) so details from that discipline are credited to them, while still showing under the architect.</p>
-        <div id="designerRows"></div>
-        <button type="button" id="addDesignerRowBtn">+ Add Designer</button>
+        <h3>Other Engineers (optional)</h3>
+        <p class="hint">The architect (Design Team above) is added automatically. Fill in any other firms involved so they're listed alongside the architect when viewing a detail.</p>
+        <div id="designerRows" class="engineer-grid"></div>
         <datalist id="firmNameOptions"></datalist>
       </div>
 
@@ -75,7 +74,6 @@
         </div>
         <div class="buttons">
           <button id="prevBtn">Prev</button>
-          <button id="nextBtn">Next</button>
           <button id="fitBtn">Fit</button>
           <button id="actualBtn">100%</button>
           <button id="addBoxBtn">Add Box Fallback</button>
@@ -93,6 +91,7 @@
             <img id="sheetImage" alt="Sheet" draggable="false" />
             <div id="boxLayer"></div>
           </div>
+          <div id="sheetLoadingOverlay" class="hidden"><div class="spinner"></div><span>Loading next sheet...</span></div>
         </div>
 
         <aside>
