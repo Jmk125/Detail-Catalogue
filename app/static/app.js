@@ -117,15 +117,23 @@ let uploadEntries = [];
 $("uploadBtn").addEventListener("click", uploadFiles);
 
 function addSelectedFiles(fileList) {
+  const rejected = [];
   for (const file of Array.from(fileList || [])) {
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      rejected.push(file.name);
+      continue;
+    }
     const entry = { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, file, progress: 0, status: "queued" };
     uploadEntries.push(entry);
   }
+  if (rejected.length) alert(`Only PDF files can be uploaded: ${rejected.join(", ")}`);
   renderSelectedFiles();
   fileInput.value = "";
 }
 
 function removeSelectedFile(id) {
+  const entry = uploadEntries.find(e => e.id === id);
+  if (entry && ["uploading", "done"].includes(entry.status)) return;
   uploadEntries = uploadEntries.filter(e => e.id !== id);
   renderSelectedFiles();
 }
@@ -135,75 +143,171 @@ function renderSelectedFiles() {
   container.innerHTML = "";
   for (const entry of uploadEntries) {
     const item = document.createElement("div");
-    item.className = "selected-file";
+    item.className = `selected-file ${entry.status}`;
     const statusLabel = entry.status === "error" ? (entry.error || "Failed")
-      : entry.status === "done" ? "Done"
+      : entry.status === "done" ? "Uploaded"
       : entry.status === "uploading" ? `${entry.progress}%`
-      : "Queued";
+      : entry.status === "processing" ? "Processing"
+      : "Ready to upload";
+    const canRemove = !["uploading", "done", "processing"].includes(entry.status);
     item.innerHTML = `
-      <span class="selected-file-name">${escapeHtml(entry.file.name)}</span>
-      <div class="selected-file-bar"><div class="selected-file-fill" style="width:${entry.progress}%"></div></div>
+      <span class="selected-file-name" title="${escapeAttr(entry.file.name)}">${escapeHtml(entry.file.name)}</span>
+      <div class="selected-file-bar" aria-label="Upload progress for ${escapeAttr(entry.file.name)}"><div class="selected-file-fill" style="width:${entry.progress}%"></div></div>
       <span class="selected-file-status${entry.status === "error" ? " error" : ""}">${escapeHtml(statusLabel)}</span>
-      <button type="button" class="remove-file-btn" aria-label="Remove">×</button>
+      <button type="button" class="remove-file-btn" aria-label="Remove ${escapeAttr(entry.file.name)}" ${canRemove ? "" : "disabled"}>×</button>
     `;
     item.querySelector(".remove-file-btn").addEventListener("click", () => removeSelectedFile(entry.id));
     container.appendChild(item);
   }
+  updateUploadButtonState();
 }
 
-function uploadFiles() {
-  if (!uploadEntries.length) {
+function updateUploadButtonState() {
+  const btn = $("uploadBtn");
+  const busy = uploadEntries.some(e => ["uploading", "processing"].includes(e.status));
+  btn.disabled = busy || !uploadEntries.length;
+  if (busy) {
+    btn.textContent = uploadEntries.some(e => e.status === "uploading") ? "Uploading..." : "Starting processing...";
+  } else {
+    btn.textContent = "Upload & Process";
+  }
+}
+
+async function uploadFiles() {
+  const entriesToUpload = uploadEntries.filter(e => e.status !== "done");
+  if (!uploadEntries.length || !entriesToUpload.length) {
     alert("Choose one or more PDFs first.");
     return;
   }
-  const btn = $("uploadBtn");
-  btn.disabled = true;
 
+  resetReviewWorkspace();
+  $("reviewPanel").classList.add("hidden");
+  $("processingStatus").classList.add("hidden");
+
+  try {
+    updateUploadButtonState();
+    manifest = await createEmptyProject();
+    projectId = manifest.project_id;
+
+    const uploadResults = await Promise.allSettled(entriesToUpload.map(entry => uploadSingleFile(entry)));
+    const failedUpload = uploadResults.find(result => result.status === "rejected");
+    if (failedUpload) throw failedUpload.reason;
+
+    for (const entry of entriesToUpload) entry.status = "processing";
+    renderSelectedFiles();
+
+    const processRes = await fetch(`/api/projects/${projectId}/process`, { method: "POST" });
+    if (!processRes.ok) throw new Error(await responseErrorMessage(processRes, "Could not start processing."));
+
+    manifest = await processRes.json();
+    pageIndex = 0;
+    $("reviewPanel").classList.remove("hidden");
+    renderProcessingStatus(manifest.processing_status);
+    startPolling();
+    await loadNextReady(-1);
+    await loadDesignTeams();
+    await loadLibraryFacets();
+
+    for (const entry of entriesToUpload) entry.status = "done";
+    renderSelectedFiles();
+  } catch (err) {
+    const message = err?.message || "Upload failed";
+    for (const entry of entriesToUpload) {
+      if (entry.status === "done") {
+        entry.status = "queued";
+        entry.progress = 0;
+      } else if (["uploading", "processing"].includes(entry.status)) {
+        entry.status = "error";
+        entry.error = message;
+      }
+    }
+    renderSelectedFiles();
+    alert(message);
+  } finally {
+    updateUploadButtonState();
+  }
+}
+
+async function createEmptyProject() {
   const form = new FormData();
-  for (const entry of uploadEntries) form.append("files", entry.file);
   form.append("project_name", $("projectName").value || "");
   form.append("design_team", $("designTeam").value || "");
   form.append("discipline", $("discipline").value || "unknown");
   form.append("designers", JSON.stringify(collectDesigners()));
+  const res = await fetch("/api/projects/init", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await responseErrorMessage(res, "Could not create the project."));
+  return res.json();
+}
 
-  for (const entry of uploadEntries) entry.status = "uploading";
-  renderSelectedFiles();
+function uploadSingleFile(entry) {
+  return new Promise((resolve, reject) => {
+    entry.status = "uploading";
+    entry.progress = 0;
+    entry.error = "";
+    renderSelectedFiles();
 
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/projects");
-  xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
-    const pct = Math.round((e.loaded / e.total) * 100);
-    for (const entry of uploadEntries) entry.progress = pct;
-    renderSelectedFiles();
-  };
-  xhr.onload = async () => {
-    btn.disabled = false;
-    if (xhr.status >= 200 && xhr.status < 300) {
-      for (const entry of uploadEntries) { entry.progress = 100; entry.status = "done"; }
+    const form = new FormData();
+    form.append("file", entry.file);
+    form.append("process", "false");
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/projects/${projectId}/sources`);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      entry.progress = Math.max(1, Math.min(99, Math.round((e.loaded / e.total) * 100)));
       renderSelectedFiles();
-      manifest = JSON.parse(xhr.responseText);
-      projectId = manifest.project_id;
-      pageIndex = 0;
-      $("reviewPanel").classList.remove("hidden");
-      renderProcessingStatus(manifest.processing_status);
-      startPolling();
-      await loadNextReady(-1);
-      await loadDesignTeams();
-      await loadLibraryFacets();
-    } else {
-      let detail = "Upload failed";
-      try { detail = JSON.parse(xhr.responseText).detail; } catch {}
-      for (const entry of uploadEntries) { entry.status = "error"; entry.error = detail; }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        entry.progress = 100;
+        entry.status = "done";
+        try { manifest = JSON.parse(xhr.responseText); } catch {}
+        renderSelectedFiles();
+        resolve();
+      } else {
+        let detail = "Upload failed";
+        try { detail = JSON.parse(xhr.responseText).detail || detail; } catch {}
+        entry.status = "error";
+        entry.error = detail;
+        renderSelectedFiles();
+        reject(new Error(`${entry.file.name}: ${detail}`));
+      }
+    };
+    xhr.onerror = () => {
+      entry.status = "error";
+      entry.error = "Upload failed";
       renderSelectedFiles();
-    }
-  };
-  xhr.onerror = () => {
-    btn.disabled = false;
-    for (const entry of uploadEntries) { entry.status = "error"; entry.error = "Upload failed"; }
-    renderSelectedFiles();
-  };
-  xhr.send(form);
+      reject(new Error(`${entry.file.name}: Upload failed`));
+    };
+    xhr.send(form);
+  });
+}
+
+async function responseErrorMessage(res, fallback) {
+  try {
+    const data = await res.json();
+    return data.detail || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function resetReviewWorkspace() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  pageIndex = 0;
+  boxes = [];
+  selectedId = null;
+  loadedPageId = null;
+  sheetBox = null;
+  const img = $("sheetImage");
+  if (img) img.removeAttribute("src");
+  $("boxLayer").innerHTML = "";
+  $("boxList").innerHTML = "";
+  $("detailsList").innerHTML = "";
+  $("sheetInfo").textContent = "";
 }
 
 function debounce(fn, delay) {
