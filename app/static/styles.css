@@ -636,3 +636,52 @@ aside {
   .detail-editor { grid-template-columns: 1fr; }
   .detail-large { max-height: 68vh; }
 }
+
+/* Use more of the viewport and make library cards denser. */
+main {
+  max-width: none;
+  width: 100%;
+  padding: 14px;
+}
+
+.panel {
+  margin-bottom: 12px;
+}
+
+.detail-card {
+  padding: 10px;
+}
+
+.card-thumb-wrap {
+  margin: -10px -10px 8px;
+}
+
+.card-thumb-wrap img,
+.detail-card img {
+  max-height: 150px;
+}
+
+.detail-card strong {
+  display: block;
+  line-height: 1.2;
+  margin-bottom: 4px;
+}
+
+.detail-card small {
+  display: block;
+  line-height: 1.25;
+}
+
+.library-grid {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.library-list .detail-card {
+  grid-template-columns: 130px 1fr;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  main { padding: 10px; }
+}

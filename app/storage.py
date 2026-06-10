@@ -20,8 +20,6 @@ def project_dir(project_id: str) -> Path:
 def rel_url_path(path: Path, project_id: str) -> str:
     return path.relative_to(project_dir(project_id)).as_posix()
 
-def rel_url_path(path: Path, project_id: str) -> str:
-    return path.relative_to(project_dir(project_id)).as_posix()
 
 def get_or_create_design_team(name: str | None) -> int | None:
     clean = (name or "").strip()
@@ -39,21 +37,6 @@ def get_or_create_design_team(name: str | None) -> int | None:
         )
         return int(cur.lastrowid)
 
-def get_or_create_design_team(name: str | None) -> int | None:
-    clean = (name or "").strip()
-    if not clean:
-        return None
-    now = utc_now()
-    with connect() as conn:
-        row = conn.execute("SELECT id FROM design_teams WHERE lower(name)=lower(?)", (clean,)).fetchone()
-        if row:
-            conn.execute("UPDATE design_teams SET last_used_at=? WHERE id=?", (now, row["id"]))
-            return int(row["id"])
-        cur = conn.execute(
-            "INSERT INTO design_teams(name, created_at, last_used_at) VALUES(?, ?, ?)",
-            (clean, now, now),
-        )
-        return int(cur.lastrowid)
 
 def list_design_teams(q: str = "") -> list[dict[str, Any]]:
     like = f"%{q.strip()}%"
@@ -70,20 +53,6 @@ def list_design_teams(q: str = "") -> list[dict[str, Any]]:
         ).fetchall()
         return [dict(r) for r in rows]
 
-def list_design_teams(q: str = "") -> list[dict[str, Any]]:
-    like = f"%{q.strip()}%"
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, name, created_at, last_used_at
-            FROM design_teams
-            WHERE ? = '%%' OR name LIKE ?
-            ORDER BY last_used_at DESC, name ASC
-            LIMIT 50
-            """,
-            (like, like),
-        ).fetchall()
-        return [dict(r) for r in rows]
 
 def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None) -> None:
     settings = settings or get_settings()
@@ -540,6 +509,7 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         "summary",
         "searchable_description",
         "assembly_system_type",
+        "confidence_score",
         "bookmarked",
     }
     detail_assignments = []
@@ -555,6 +525,12 @@ def update_detail(detail_id: str, updates: dict[str, Any]) -> dict[str, Any] | N
         detail_params.append(json.dumps(tags))
     else:
         tags = None
+    if "csi_divisions" in updates and updates["csi_divisions"] is not None:
+        detail_assignments.append("csi_divisions_json=?")
+        detail_params.append(json.dumps([str(v).strip() for v in updates["csi_divisions"] if str(v).strip()]))
+    if "warnings" in updates and updates["warnings"] is not None:
+        detail_assignments.append("warnings_json=?")
+        detail_params.append(json.dumps([str(v).strip() for v in updates["warnings"] if str(v).strip()]))
 
     project_assignments = []
     project_params = []
@@ -599,6 +575,35 @@ def delete_detail(detail_id: str) -> bool:
     with connect() as conn:
         conn.execute("DELETE FROM details WHERE id=?", (detail_id,))
     return True
+
+
+def rescan_detail(detail_id: str) -> dict[str, Any] | None:
+    detail = get_detail(detail_id)
+    if not detail:
+        return None
+    crop_path = project_dir(detail["project_id"]) / detail["crop_image"]
+    context = build_ai_prompt_context({
+        "project_name": detail.get("project_name"),
+        "design_team": detail.get("design_team"),
+        "source_pdf_filename": detail.get("source_filename"),
+        "page_number": detail.get("page_number"),
+        "known_discipline": detail.get("discipline"),
+        "crop_image": crop_path,
+    })
+    result = get_ai_provider().tag_detail(crop_path, context)
+    return {
+        "detail_title": result.get("detail_title"),
+        "detail_number": result.get("detail_number"),
+        "sheet_number": result.get("sheet_number"),
+        "discipline": result.get("discipline") or "unknown",
+        "csi_divisions": result.get("csi_divisions", []),
+        "tags": result.get("tags", []),
+        "summary": result.get("summary"),
+        "assembly_system_type": result.get("assembly_system_type"),
+        "searchable_description": result.get("searchable_description"),
+        "confidence_score": result.get("confidence_score"),
+        "warnings": result.get("warnings", []),
+    }
 
 
 def list_library_facets() -> dict[str, Any]:

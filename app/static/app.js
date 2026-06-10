@@ -607,11 +607,8 @@ function detailCard(d, compact = false) {
   card.innerHTML = `
     <div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button></div>
     <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
-    <small>${escapeHtml(d.project_name || "Unnamed project")} · ${escapeHtml(d.design_team || "No design team")} · ${escapeHtml(d.discipline || "unknown")}</small><br>
-    <small>${escapeHtml(d.source_filename || "PDF")} page ${d.page_number || "?"} · Detail ${escapeHtml(d.detail_number || "?")} · Sheet ${escapeHtml(d.sheet_number || "?")}</small>
-    <p>${escapeHtml(d.summary || "No AI summary yet.")}</p>
-    <div>${tags}</div>
-    <small>AI: ${escapeHtml(d.ai_status || "pending")}</small>
+    <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
+    <small>${escapeHtml(d.discipline || "unknown")}</small>
   `;
   card.querySelector(".bookmark-badge").addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -692,11 +689,13 @@ function renderDetailEditor(d) {
           </select>
         </label>
         <label>Tags<input id="editTags" type="text" value="${escapeAttr((d.tags || []).join(", "))}" placeholder="comma, separated, tags" /></label>
+        <label>CSI Divisions<input id="editCsi" type="text" value="${escapeAttr((d.csi_divisions || []).join(", "))}" placeholder="comma, separated CSI divisions" /></label>
         <label>AI Summary / Description<textarea id="editSummary" rows="5">${escapeHtml(d.summary || "")}</textarea></label>
         <label>Searchable Description<textarea id="editDescription" rows="5">${escapeHtml(d.searchable_description || "")}</textarea></label>
         <label>Assembly/System Type<input id="editAssembly" type="text" value="${escapeAttr(d.assembly_system_type || "")}" /></label>
         <div class="editor-actions">
           <button type="submit" class="primary-btn">Save Changes</button>
+          <button type="button" id="rescanDetailBtn">AI Rescan</button>
           <button type="button" id="deleteDetailBtn" class="danger-btn">Delete Detail</button>
         </div>
         <p class="hint">Warnings: ${escapeHtml((d.warnings || []).join("; ") || "None")}</p>
@@ -709,6 +708,7 @@ function renderDetailEditor(d) {
     if (updated) renderDetailEditor(updated);
   });
   $("deleteDetailBtn").addEventListener("click", async () => deleteDetailFromEditor(d.id));
+  $("rescanDetailBtn").addEventListener("click", async () => rescanDetailFromEditor(d));
 }
 
 function disciplineOptions(selected) {
@@ -725,10 +725,64 @@ async function saveDetailEdits(id) {
     sheet_number: $("editSheetNumber").value.trim() || null,
     discipline: $("editDiscipline").value,
     tags: $("editTags").value.split(",").map(t => t.trim()).filter(Boolean),
+    csi_divisions: $("editCsi").value.split(",").map(t => t.trim()).filter(Boolean),
     summary: $("editSummary").value.trim() || null,
     searchable_description: $("editDescription").value.trim() || null,
     assembly_system_type: $("editAssembly").value.trim() || null,
     bookmarked: $("editBookmarked").checked,
+  };
+  const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
+  if (!res.ok) { alert(await res.text()); return null; }
+  const updated = await res.json();
+  await loadLibrary();
+  if (projectId) await loadDetails();
+  return updated;
+}
+
+
+async function rescanDetailFromEditor(detail) {
+  const btn = $("rescanDetailBtn");
+  btn.disabled = true;
+  btn.textContent = "Rescanning...";
+  try {
+    const res = await fetch(`/api/details/${detail.id}/rescan`, { method: "POST" });
+    if (!res.ok) { alert(await res.text()); return; }
+    const data = await res.json();
+    const proposal = data.proposal;
+    if (confirm(aiProposalMessage(proposal))) {
+      const updated = await applyAiProposal(detail.id, proposal);
+      if (updated) renderDetailEditor(updated);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "AI Rescan";
+  }
+}
+
+function aiProposalMessage(proposal) {
+  return `AI rescan complete. Replace this detail's editable AI/catalog fields with the new result?\n\n` +
+    `Title: ${proposal.detail_title || "(blank)"}\n` +
+    `Detail #: ${proposal.detail_number || "(blank)"}\n` +
+    `Sheet #: ${proposal.sheet_number || "(blank)"}\n` +
+    `Discipline: ${proposal.discipline || "unknown"}\n` +
+    `Tags: ${(proposal.tags || []).join(", ") || "(none)"}\n\n` +
+    `Summary:\n${proposal.summary || "(blank)"}\n\n` +
+    `Choose OK to replace, or Cancel to keep the current info.`;
+}
+
+async function applyAiProposal(id, proposal) {
+  const payload = {
+    detail_title: proposal.detail_title || null,
+    detail_number: proposal.detail_number || null,
+    sheet_number: proposal.sheet_number || null,
+    discipline: proposal.discipline || "unknown",
+    tags: proposal.tags || [],
+    csi_divisions: proposal.csi_divisions || [],
+    warnings: proposal.warnings || [],
+    summary: proposal.summary || null,
+    searchable_description: proposal.searchable_description || null,
+    assembly_system_type: proposal.assembly_system_type || null,
+    confidence_score: proposal.confidence_score ?? null,
   };
   const res = await fetch(`/api/details/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
   if (!res.ok) { alert(await res.text()); return null; }

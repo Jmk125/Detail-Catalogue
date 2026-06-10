@@ -31,7 +31,10 @@ class DetailUpdateRequest(BaseModel):
     sheet_number: Optional[str] = None
     discipline: Optional[str] = None
     tags: Optional[List[str]] = None
+    csi_divisions: Optional[List[str]] = None
+    warnings: Optional[List[str]] = None
     summary: Optional[str] = None
     searchable_description: Optional[str] = None
     assembly_system_type: Optional[str] = None
+    confidence_score: Optional[float] = None
     bookmarked: Optional[bool] = None

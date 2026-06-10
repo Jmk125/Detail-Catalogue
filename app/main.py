@@ -28,6 +28,7 @@ from .storage import (
     make_project_zip,
     process_pending_ai_jobs,
     project_dir,
+    rescan_detail,
     save_approved_crops,
     skip_page,
     update_detail,
@@ -178,6 +179,19 @@ def update_detail_endpoint(detail_id: str, req: DetailUpdateRequest):
     if not item:
         raise HTTPException(status_code=404, detail="Detail not found.")
     return item
+
+
+
+
+@app.post("/api/details/{detail_id}/rescan")
+def rescan_detail_endpoint(detail_id: str):
+    try:
+        proposal = rescan_detail(detail_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Detail not found.")
+    return {"proposal": proposal}
 
 
 @app.delete("/api/details/{detail_id}")
