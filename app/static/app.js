@@ -96,11 +96,10 @@ dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropZone.classList.remove("dragover");
   if (e.dataTransfer.files.length) {
-    fileInput.files = e.dataTransfer.files;
-    setSelectedFileStatus();
+    addSelectedFiles(e.dataTransfer.files);
   }
 });
-fileInput.addEventListener("change", setSelectedFileStatus);
+fileInput.addEventListener("change", () => addSelectedFiles(fileInput.files));
 
 canvasWrap.addEventListener("wheel", onWheelZoom, { passive: false });
 canvasWrap.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -114,9 +113,46 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-function setSelectedFileStatus() {
-  const names = Array.from(fileInput.files || []).map(f => f.name);
-  if (names.length) $("status").textContent = `Selected ${names.length} PDF(s): ${names.join(", ")}`;
+let selectedFiles = [];
+
+function addSelectedFiles(fileList) {
+  for (const file of Array.from(fileList || [])) {
+    if (!selectedFiles.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) {
+      selectedFiles.push(file);
+    }
+  }
+  syncFileInput();
+  renderSelectedFiles();
+}
+
+function removeSelectedFile(index) {
+  selectedFiles.splice(index, 1);
+  syncFileInput();
+  renderSelectedFiles();
+}
+
+function syncFileInput() {
+  const dt = new DataTransfer();
+  for (const file of selectedFiles) dt.items.add(file);
+  fileInput.files = dt.files;
+}
+
+function renderSelectedFiles() {
+  const container = $("selectedFiles");
+  if (!selectedFiles.length) {
+    container.innerHTML = "";
+    $("status").textContent = "";
+    return;
+  }
+  container.innerHTML = "";
+  selectedFiles.forEach((file, i) => {
+    const item = document.createElement("span");
+    item.className = "selected-file";
+    item.innerHTML = `${escapeHtml(file.name)} <button type="button" data-index="${i}" aria-label="Remove">×</button>`;
+    item.querySelector("button").addEventListener("click", () => removeSelectedFile(i));
+    container.appendChild(item);
+  });
+  $("status").textContent = `Selected ${selectedFiles.length} PDF(s).`;
 }
 
 function debounce(fn, delay) {
@@ -179,6 +215,9 @@ async function uploadPdf() {
   manifest = await res.json();
   projectId = manifest.project_id;
   pageIndex = 0;
+  selectedFiles = [];
+  syncFileInput();
+  renderSelectedFiles();
   $("reviewPanel").classList.remove("hidden");
   $("status").textContent = `Project created with ${manifest.pages.length} pages. Waiting for first ready sheet...`;
   renderProcessingStatus(manifest.processing_status);
