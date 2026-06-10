@@ -155,6 +155,7 @@ def init_db() -> None:
             """
         )
         _ensure_column(conn, "details", "bookmarked", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "details", "notes", "TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_details_bookmarked ON details(bookmarked)")
 
 

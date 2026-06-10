@@ -129,15 +129,24 @@
         <label class="check-filter"><input id="filterBookmarked" type="checkbox" /> Bookmarked</label>
       </div>
       <div id="libraryResults" class="library-grid"></div>
-      <div id="detailModal" class="modal hidden">
-        <div class="modal-card detail-editor-card">
-          <button id="closeDetailBtn" class="modal-close">×</button>
-          <div id="detailView"></div>
-        </div>
-      </div>
     </section>
     </div>
   </main>
+
+  <div id="detailModal" class="modal hidden">
+    <div class="modal-card detail-editor-card">
+      <button id="closeDetailBtn" class="modal-close">×</button>
+      <div id="detailView"></div>
+    </div>
+  </div>
+
+  <div id="noteModal" class="modal hidden">
+    <div class="modal-card note-card">
+      <button id="closeNoteBtn" class="modal-close">×</button>
+      <h3 id="noteModalTitle"></h3>
+      <p id="noteModalBody"></p>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
