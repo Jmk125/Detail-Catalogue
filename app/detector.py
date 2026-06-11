@@ -490,6 +490,16 @@ def _cv2_candidates_detailed(
         iterations=iterations,
     )
     contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return _filter_cv2_contours(
+        cv2,
+        contours,
+        width,
+        height,
+        min_area_ratio=min_area_ratio,
+        max_area_ratio=max_area_ratio,
+        max_aspect=max_aspect,
+        min_aspect=min_aspect,
+    )
 
 
 def _filter_cv2_contours(
