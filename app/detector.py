@@ -217,8 +217,14 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     if img is None:
         return []
 
+    orig_height, orig_width = img.shape[:2]
+
+    target = 2200
+    scale = min(1.0, target / max(orig_width, orig_height))
+    if scale < 1.0:
+        img = cv2.resize(img, (int(round(orig_width * scale)), int(round(orig_height * scale))), interpolation=cv2.INTER_AREA)
+
     height, width = img.shape[:2]
-    sheet_area = width * height
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     thresh = cv2.adaptiveThreshold(
@@ -234,7 +240,12 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     boxes = _merge_boxes(coarse, dx=14, dy=14) + _merge_boxes(fine, dx=5, dy=5)
     boxes = _merge_labels_under_details(boxes, width, height)
     boxes = _dedupe_boxes(boxes)
-    return _format_results(boxes, width, height, max_boxes)
+
+    if scale < 1.0:
+        inv = 1.0 / scale
+        boxes = [[int(round(x * inv)), int(round(y * inv)), int(round(w * inv)), int(round(h * inv))] for x, y, w, h in boxes]
+
+    return _format_results(boxes, orig_width, orig_height, max_boxes)
 
 
 def _connected_components(mask: np.ndarray) -> list[list[int]]:
