@@ -170,11 +170,16 @@
   </div>
 
   <div id="backgroundBar" class="background-bar hidden" role="status" aria-live="polite">
-    <div class="background-bar-main">
-      <strong id="backgroundBarTitle">Background work</strong>
-      <span id="backgroundBarText"></span>
+    <div class="background-bar-row">
+      <span class="background-bar-label">Sheets</span>
+      <div class="background-progress"><div id="backgroundBarFillPages" class="background-progress-fill"></div></div>
+      <span id="backgroundBarTextPages" class="background-bar-text"></span>
     </div>
-    <div class="background-progress"><div id="backgroundBarFill" class="background-progress-fill"></div></div>
+    <div class="background-bar-row">
+      <span class="background-bar-label">AI tagging</span>
+      <div class="background-progress"><div id="backgroundBarFillAi" class="background-progress-fill"></div></div>
+      <span id="backgroundBarTextAi" class="background-bar-text"></span>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>
