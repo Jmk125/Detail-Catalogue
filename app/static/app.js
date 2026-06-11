@@ -6,7 +6,7 @@ let selectedId = null;
 let dragState = null;
 let panState = null;
 let zoom = 1.0;
-let currentMergeTargetId = null;
+let currentMergeTargetIds = [];
 let pollTimer = null;
 let libraryGrid = true;
 let loadedPageId = null;
@@ -590,7 +590,7 @@ function loadPage() {
   pageIndex = page.page_index;
   boxes = applyDeletedBoxPatterns(structuredClone(page.boxes || []), page);
   selectedId = null;
-  currentMergeTargetId = null;
+  currentMergeTargetIds = [];
 
   const img = $("sheetImage");
   loadedPageId = null;
@@ -786,7 +786,7 @@ function renderBoxes() {
   const borderPx = Math.max(1, 3 / zoom);
   for (const box of boxes) {
     const el = document.createElement("div");
-    el.className = "crop-box" + (box.id === selectedId ? " selected" : "") + (box.id === currentMergeTargetId ? " merge-target" : "");
+    el.className = "crop-box" + (box.id === selectedId ? " selected" : "") + (currentMergeTargetIds.includes(box.id) ? " merge-target" : "");
     el.style.left = `${box.x}px`; el.style.top = `${box.y}px`; el.style.width = `${box.w}px`; el.style.height = `${box.h}px`;
     el.style.borderWidth = `${borderPx}px`; el.dataset.id = box.id; el.style.cursor = "move";
     const label = document.createElement("div");
@@ -874,7 +874,7 @@ function renderBoxList() {
     const li = document.createElement("li");
     li.textContent = `${i + 1}. ${Math.round(box.w)} × ${Math.round(box.h)} — ${box.source}`;
     li.className = box.id === selectedId ? "selected" : "";
-    li.onclick = () => { selectedId = box.id; currentMergeTargetId = null; renderBoxes(); renderBoxList(); };
+    li.onclick = () => { selectedId = box.id; currentMergeTargetIds = []; renderBoxes(); renderBoxList(); };
     list.appendChild(li);
   });
 }
@@ -908,13 +908,13 @@ function onDrag(e) {
     if (h < minSize) { if (mode.includes("n")) y = o.y + o.h - minSize; h = minSize; }
   }
   box.x = Math.max(0, x); box.y = Math.max(0, y); box.w = Math.max(minSize, w); box.h = Math.max(minSize, h);
-  currentMergeTargetId = findMergeTarget(box.id);
+  currentMergeTargetIds = findMergeTargets(box.id).map(b => b.id);
   renderBoxes(); renderBoxList();
 }
 
 function stopDrag() {
   if (dragState && dragState.moved) applyOverlapMerge(dragState.id);
-  dragState = null; currentMergeTargetId = null;
+  dragState = null; currentMergeTargetIds = [];
   document.removeEventListener("mousemove", onDrag);
   document.removeEventListener("mouseup", stopDrag);
   renderBoxes(); renderBoxList();
@@ -923,30 +923,31 @@ function stopDrag() {
 function boxArea(b) { return b.w * b.h; }
 function intersectionArea(a, b) { const x0 = Math.max(a.x, b.x); const y0 = Math.max(a.y, b.y); const x1 = Math.min(a.x + a.w, b.x + b.w); const y1 = Math.min(a.y + a.h, b.y + b.h); return Math.max(0, x1 - x0) * Math.max(0, y1 - y0); }
 function unionBox(a, b) { const x0 = Math.min(a.x, b.x); const y0 = Math.min(a.y, b.y); const x1 = Math.max(a.x + a.w, b.x + b.w); const y1 = Math.max(a.y + a.h, b.y + b.h); return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; }
-function findMergeTarget(activeId) {
+function findMergeTargets(activeId) {
   const active = boxes.find(b => b.id === activeId);
-  if (!active) return null;
-  let best = null, bestRatio = 0;
-  for (const other of boxes) {
-    if (other.id === activeId) continue;
-    const ratio = intersectionArea(active, other) / Math.max(1, Math.min(boxArea(active), boxArea(other)));
-    if (ratio >= 0.50 && ratio > bestRatio) { best = other; bestRatio = ratio; }
-  }
-  return best ? best.id : null;
+  if (!active) return [];
+  return boxes
+    .filter(other => {
+      if (other.id === activeId) return false;
+      const ratio = intersectionArea(active, other) / Math.max(1, Math.min(boxArea(active), boxArea(other)));
+      return ratio >= 0.50;
+    })
+    .sort((a, b) => boxArea(b) - boxArea(a));
 }
 function applyOverlapMerge(activeId) {
   const active = boxes.find(b => b.id === activeId);
-  const targetId = findMergeTarget(activeId);
-  if (!active || !targetId) return;
-  const target = boxes.find(b => b.id === targetId);
-  if (!target) return;
-  const activeIsSmaller = boxArea(active) <= boxArea(target);
-  const keep = activeIsSmaller ? target : active;
-  const remove = activeIsSmaller ? active : target;
-  const u = unionBox(active, target);
-  keep.x = u.x; keep.y = u.y; keep.w = u.w; keep.h = u.h;
+  if (!active) return;
+  const targets = findMergeTargets(activeId);
+  if (!targets.length) return;
+
+  const mergeGroup = [active, ...targets];
+  const keep = mergeGroup.reduce((largest, box) => boxArea(box) > boxArea(largest) ? box : largest, active);
+  const mergedBounds = mergeGroup.reduce((bounds, box) => unionBox(bounds, box), keep);
+
+  keep.x = mergedBounds.x; keep.y = mergedBounds.y; keep.w = mergedBounds.w; keep.h = mergedBounds.h;
   keep.source = keep.source.includes("merged") ? keep.source : `${keep.source}+merged`;
-  boxes = boxes.filter(b => b.id !== remove.id);
+  const removeIds = new Set(mergeGroup.filter(box => box.id !== keep.id).map(box => box.id));
+  boxes = boxes.filter(box => !removeIds.has(box.id));
   selectedId = keep.id;
 }
 
@@ -1004,12 +1005,10 @@ function deleteSelected() {
   rememberDeletedBox(deleted);
   boxes = boxes.filter(b => b.id !== selectedId);
   selectedId = null;
-  currentMergeTargetId = null;
+  currentMergeTargetIds = [];
   renderBoxes();
   renderBoxList();
 }
-function deleteSelected() { if (!selectedId) return; boxes = boxes.filter(b => b.id !== selectedId); selectedId = null; currentMergeTargetId = null; renderBoxes(); renderBoxList(); }
-
 async function redetectSheet() {
   if (!projectId) return;
   const page = currentPage();
@@ -1032,7 +1031,7 @@ async function redetectSheet() {
     boxes = applyDeletedBoxPatterns(structuredClone(data.boxes || []), page);
     page.boxes = structuredClone(boxes);
     selectedId = null;
-    currentMergeTargetId = null;
+    currentMergeTargetIds = [];
     renderBoxes();
     renderBoxList();
     $("sheetInfo").textContent = `${manifest.project_name || "Unnamed Project"} — ${page.source_filename || "PDF"} page ${page.page_number} — batch page ${page.page_index + 1} of ${manifest.pages.length} — ${boxes.length} candidate boxes`;

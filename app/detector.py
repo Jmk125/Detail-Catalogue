@@ -66,21 +66,279 @@ def _intersection_area(a, b):
 
 
 def _dedupe_boxes(boxes, overlap_threshold=0.86):
-    """Prefer smaller, more precise boxes when multi-scale passes overlap heavily."""
+    """Remove near-identical multi-scale boxes without dropping useful larger crops.
+
+    Earlier versions treated any box fully contained by a smaller one as a
+    duplicate. That is fine when two passes found the same detail with slightly
+    different padding, but it is harmful for sparse/unboxed sheets where a fine
+    pass may find a small callout inside a larger valid detail crop. Require the
+    boxes to be similar enough in size (or to have strong IoU) before considering
+    them duplicates.
+    """
     kept = []
     for box in sorted([list(map(int, b[:4])) for b in boxes], key=lambda b: (b[2] * b[3], b[1], b[0])):
         area = max(1, box[2] * box[3])
         duplicate = False
         for existing in kept:
             existing_area = max(1, existing[2] * existing[3])
-            overlap = _intersection_area(box, existing) / min(area, existing_area)
-            if overlap >= overlap_threshold:
+            intersection = _intersection_area(box, existing)
+            overlap = intersection / min(area, existing_area)
+            iou = intersection / max(1, area + existing_area - intersection)
+            size_similarity = min(area, existing_area) / max(area, existing_area)
+            if overlap >= overlap_threshold and (size_similarity >= 0.45 or iou >= 0.55):
                 duplicate = True
                 break
         if not duplicate:
             kept.append(box)
     return sorted(kept, key=lambda b: (b[1], b[0]))
 
+
+def _remove_composite_boxes(boxes):
+    """Drop large boxes that merely wrap several smaller detected details.
+
+    Sparse passes intentionally add small candidates for loose details and labels.
+    Occasionally a coarser pass also returns a column/row-sized box around several
+    of those candidates. Keep the smaller reviewable detail boxes instead of the
+    composite wrapper.
+    """
+    normalized = [list(map(int, b[:4])) for b in boxes]
+    keep = []
+    for box in normalized:
+        area = max(1, box[2] * box[3])
+        child_centers_x = []
+        child_centers_y = []
+        for other in normalized:
+            if other is box:
+                continue
+            other_area = max(1, other[2] * other[3])
+            if other_area >= area * 0.60:
+                continue
+            if _intersection_area(box, other) / other_area < 0.88:
+                continue
+            child_centers_x.append(other[0] + other[2] / 2)
+            child_centers_y.append(other[1] + other[3] / 2)
+
+        wraps_multiple_rows = (
+            len(child_centers_y) >= 3
+            and max(child_centers_y) - min(child_centers_y) > box[3] * 0.35
+        )
+        wraps_multiple_columns = (
+            len(child_centers_x) >= 3
+            and max(child_centers_x) - min(child_centers_x) > box[2] * 0.35
+        )
+        if wraps_multiple_rows or wraps_multiple_columns:
+            continue
+        keep.append(box)
+    return keep
+
+
+def _median(values):
+    if not values:
+        return 0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _packed_layout_metrics(boxes, width, height, raw_count=None):
+    """Summarize whether preview candidates look like a packed detail grid."""
+    sheet_area = max(1, width * height)
+    preview = []
+    for x, y, w, h in [list(map(int, b[:4])) for b in boxes]:
+        area = w * h
+        if area < sheet_area * 0.00012 or area > sheet_area * 0.14:
+            continue
+        aspect = w / max(1, h)
+        if aspect > 18 or aspect < 0.04:
+            continue
+        # Do not let seals/title blocks dominate the layout choice.
+        if x > width * 0.78 and area > sheet_area * 0.012:
+            continue
+        preview.append([x, y, w, h])
+
+    centers = [(x + w / 2, y + h / 2) for x, y, w, h in preview]
+    nearest = []
+    for i, (cx, cy) in enumerate(centers):
+        best = None
+        for j, (ox, oy) in enumerate(centers):
+            if i == j:
+                continue
+            dist = ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5
+            best = dist if best is None else min(best, dist)
+        if best is not None:
+            nearest.append(best / max(width, height))
+
+    occupied = set()
+    for cx, cy in centers:
+        occupied.add((min(5, int(cx / max(1, width) * 6)), min(3, int(cy / max(1, height) * 4))))
+
+    median_nearest = _median(nearest)
+    area_ratios = [(w * h) / sheet_area for _, _, w, h in preview]
+    median_area = _median(area_ratios)
+    raw_count = len(boxes) if raw_count is None else raw_count
+
+    enough_preview = len(preview) >= 10
+    small_enough_to_split = median_area <= 0.04
+    broad_grid = len(occupied) >= 14
+    very_many_close_clusters = len(preview) >= 24 and len(occupied) >= 10 and median_nearest <= 0.12
+    many_raw_clusters = raw_count >= 45 and len(preview) >= 16 and len(occupied) >= 8
+    packed_layout = enough_preview and small_enough_to_split and (
+        broad_grid or very_many_close_clusters or many_raw_clusters
+    )
+
+    return {
+        "raw_count": raw_count,
+        "preview_count": len(preview),
+        "occupied_cells": len(occupied),
+        "median_nearest": median_nearest,
+        "median_area": median_area,
+        "broad_grid": broad_grid,
+        "very_many_close_clusters": very_many_close_clusters,
+        "many_raw_clusters": many_raw_clusters,
+        "packed_layout": packed_layout,
+    }
+
+
+def _estimate_packed_layout(boxes, width, height, raw_count=None):
+    """Return True when a sheet has many closely-spaced detail clusters.
+
+    The detector has two competing goals: loose sheets need generous grouping and
+    label reach, while packed sheets need small kernels/gaps so adjacent details do
+    not collapse into large groups. This lightweight pre-pass looks at preview
+    clusters and the raw pre-merge contour count so packed pages are still
+    recognized when the preview merge has already chained several details
+    together.
+    """
+    return _packed_layout_metrics(boxes, width, height, raw_count=raw_count)["packed_layout"]
+
+
+def _cv2_preview_candidates(cv2, thresh, width, height):
+    return _cv2_candidates(
+        cv2,
+        thresh,
+        width,
+        height,
+        line_kernel=17,
+        text_kernel=(24, 6),
+        dilate_kernel=5,
+        iterations=1,
+        min_area_ratio=0.00012,
+        max_area_ratio=0.14,
+        max_aspect=18,
+    )
+
+
+def _cv2_preview_boxes(cv2, thresh, width, height):
+    return _merge_boxes(_cv2_preview_candidates(cv2, thresh, width, height), dx=3, dy=3)
+
+
+def _cv2_detection_profiles(width, height, packed_layout):
+    if packed_layout:
+        return (
+            {
+                "line_kernel": 25,
+                "text_kernel": (32, 8),
+                "dilate_kernel": 8,
+                "iterations": 1,
+                "min_area_ratio": 0.00045,
+                "max_area_ratio": 0.20,
+                "merge_dx": 4,
+                "merge_dy": 4,
+            },
+            {
+                "line_kernel": 17,
+                "text_kernel": (24, 6),
+                "dilate_kernel": 5,
+                "iterations": 1,
+                "min_area_ratio": 0.00025,
+                "max_area_ratio": 0.16,
+                "max_aspect": 16,
+                "merge_dx": 3,
+                "merge_dy": 3,
+            },
+            {
+                "line_kernel": 11,
+                "text_kernel": (18, 5),
+                "dilate_kernel": 3,
+                "iterations": 1,
+                "min_area_ratio": 0.00018,
+                "max_area_ratio": 0.10,
+                "max_aspect": 18,
+                "merge_dx": 2,
+                "merge_dy": 2,
+            },
+        )
+
+    return (
+        {
+            "line_kernel": 45,
+            "text_kernel": (55, 12),
+            "dilate_kernel": 24,
+            "iterations": 2,
+            "min_area_ratio": 0.0008,
+            "max_area_ratio": 0.58,
+            "merge_dx": 14,
+            "merge_dy": 14,
+        },
+        {
+            "line_kernel": 25,
+            "text_kernel": (35, 8),
+            "dilate_kernel": 10,
+            "iterations": 1,
+            "min_area_ratio": 0.00055,
+            "max_area_ratio": 0.40,
+            "merge_dx": 5,
+            "merge_dy": 5,
+        },
+        {
+            "line_kernel": 17,
+            "text_kernel": (24, 6),
+            "dilate_kernel": 7,
+            "iterations": 1,
+            "min_area_ratio": 0.00025,
+            "max_area_ratio": 0.22,
+            "max_aspect": 16,
+            "merge_dx": max(4, int(width * 0.010)),
+            "merge_dy": max(4, int(height * 0.014)),
+        },
+    )
+
+
+def _pillow_preview_candidates(mask_img, width, height, sheet_area):
+    preview_img = mask_img.filter(ImageFilter.MaxFilter(3))
+    mask = np.asarray(preview_img) > 0
+    preview = []
+    for x, y, w, h, pixels in _connected_components(mask):
+        area = w * h
+        if area < sheet_area * 0.00012 or area > sheet_area * 0.14:
+            continue
+        aspect = w / max(h, 1)
+        if aspect > 18 or aspect < 0.04:
+            continue
+        if pixels < sheet_area * 0.00010:
+            continue
+        preview.append([x, y, w, h])
+    return preview
+
+
+def _pillow_preview_boxes(mask_img, width, height, sheet_area):
+    return _merge_boxes(_pillow_preview_candidates(mask_img, width, height, sheet_area), dx=3, dy=3)
+
+
+def _pillow_detection_profiles(width, height, packed_layout):
+    if packed_layout:
+        return (
+            {"factor": 0.45, "merge_gap": 4, "min_area_ratio": 0.00045, "max_area_ratio": 0.20, "max_aspect": 12},
+            {"factor": 0.32, "merge_gap": 3, "min_area_ratio": 0.00025, "max_area_ratio": 0.16, "max_aspect": 16},
+            {"factor": 0.24, "merge_gap": 2, "min_area_ratio": 0.00018, "max_area_ratio": 0.10, "max_aspect": 18},
+        )
+    return (
+        {"factor": 1.0, "merge_gap": 14, "min_area_ratio": 0.0008, "max_area_ratio": 0.58, "max_aspect": 12},
+        {"factor": 0.45, "merge_gap": 5, "min_area_ratio": 0.00055, "max_area_ratio": 0.40, "max_aspect": 12},
+        {"factor": 0.32, "merge_gap": max(4, int(min(width, height) * 0.010)), "min_area_ratio": 0.00025, "max_area_ratio": 0.22, "max_aspect": 16},
+    )
 
 def _horizontal_overlap_ratio(a, b):
     ax, ay, aw, ah = a
@@ -95,7 +353,7 @@ def _center_distance_x(a, b):
     return abs((ax + aw / 2) - (bx + bw / 2))
 
 
-def _merge_labels_under_details(boxes, sheet_w, sheet_h):
+def _merge_labels_under_details(boxes, sheet_w, sheet_h, *, packed_layout=False):
     """
     Merge likely detail title/detail-number labels below main detail boxes.
 
@@ -130,9 +388,14 @@ def _merge_labels_under_details(boxes, sheet_w, sheet_h):
 
                 overlap = _horizontal_overlap_ratio(cur, cand)
                 center_close = _center_distance_x(cur, cand) < max(cw, bw) * 0.40
-                near_below = gap <= sheet_h * 0.065
-                label_like_height = bh <= max(ch * 0.55, sheet_h * 0.075)
-                not_huge = (bw * bh) < (cw * ch) * 0.75
+                # Some design teams place detail tags/titles noticeably below the
+                # graphic. Allow a longer reach only when the lower candidate is
+                # horizontally centered like a label, which avoids broadly merging
+                # stacked details.
+                label_reach = 0.055 if packed_layout else (0.10 if center_close else 0.065)
+                near_below = gap <= sheet_h * label_reach
+                label_like_height = bh <= min(max(ch * 0.55, sheet_h * 0.075), sheet_h * 0.10)
+                not_huge = (bw * bh) < (cw * ch) * 0.45
                 reasonable_width = bw <= cw * 1.65 or center_close
 
                 if near_below and label_like_height and not_huge and reasonable_width and (overlap >= 0.18 or center_close):
@@ -177,7 +440,21 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
-def _cv2_candidates(cv2, thresh, width, height, *, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2):
+def _cv2_candidates(
+    cv2,
+    thresh,
+    width,
+    height,
+    *,
+    line_kernel=45,
+    text_kernel=(55, 12),
+    dilate_kernel=24,
+    iterations=2,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
+):
     sheet_area = width * height
     kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
     kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
@@ -197,10 +474,10 @@ def _cv2_candidates(cv2, thresh, width, height, *, line_kernel=45, text_kernel=(
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
         area = w * h
-        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+        if area < sheet_area * min_area_ratio or area > sheet_area * max_area_ratio:
             continue
         aspect = w / max(h, 1)
-        if aspect > 12 or aspect < 0.05:
+        if aspect > max_aspect or aspect < min_aspect:
             continue
         if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
             continue
@@ -231,15 +508,26 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    # Multi-scale detection: the coarse pass behaves like the original detector,
-    # while the fine pass keeps packed detail sheets from collapsing into a few
-    # large blobs when details are tight together.
-    coarse = _cv2_candidates(cv2, thresh, width, height, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2)
-    fine = _cv2_candidates(cv2, thresh, width, height, line_kernel=25, text_kernel=(35, 8), dilate_kernel=10, iterations=1)
+    preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
 
-    boxes = _merge_boxes(coarse, dx=14, dy=14) + _merge_boxes(fine, dx=5, dy=5)
-    boxes = _merge_labels_under_details(boxes, width, height)
+    # Multi-scale detection adapts to sheet density. Packed sheets use tighter
+    # kernels/gaps and shorter label reach so adjacent details do not collapse
+    # into large groups; looser sheets keep the more generous grouping needed to
+    # capture sparse linework and separated labels.
+    profiles = _cv2_detection_profiles(width, height, packed_layout)
+
+    boxes = []
+    for profile in profiles:
+        candidate_profile = dict(profile)
+        merge_dx = candidate_profile.pop("merge_dx")
+        merge_dy = candidate_profile.pop("merge_dy")
+        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+        boxes.extend(_merge_boxes(candidates, dx=merge_dx, dy=merge_dy))
+    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
     boxes = _dedupe_boxes(boxes)
+    boxes = _remove_composite_boxes(boxes)
 
     if scale < 1.0:
         inv = 1.0 / scale
@@ -306,33 +594,45 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
     dilate = max(7, int(round(min(width, height) * 0.012)))
     if dilate % 2 == 0:
         dilate += 1
+    preview_candidates = _pillow_preview_candidates(mask_img, width, height, sheet_area)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
+
     boxes = []
-    for factor, merge_gap in ((1.0, 14), (0.45, 5)):
-        pass_dilate = max(3, int(round(dilate * factor)))
+    profiles = _pillow_detection_profiles(width, height, packed_layout)
+    for profile in profiles:
+        pass_dilate = max(3, int(round(dilate * profile["factor"])))
         if pass_dilate % 2 == 0:
             pass_dilate += 1
         pass_img = mask_img.filter(ImageFilter.MaxFilter(pass_dilate))
-        if factor >= 1.0:
+        if profile["factor"] >= 1.0:
             pass_img = pass_img.filter(ImageFilter.MaxFilter(max(3, pass_dilate // 2 * 2 + 1)))
         mask = np.asarray(pass_img) > 0
 
         pass_boxes = []
         for x, y, w, h, pixels in _connected_components(mask):
             area = w * h
-            if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+            if area < sheet_area * profile["min_area_ratio"] or area > sheet_area * profile["max_area_ratio"]:
                 continue
             aspect = w / max(h, 1)
-            if aspect > 12 or aspect < 0.05:
+            if aspect > profile["max_aspect"] or aspect < 0.05:
                 continue
-            if pixels < sheet_area * 0.00025:
+            if pixels < sheet_area * 0.00018:
                 continue
             if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
                 continue
             pass_boxes.append([x, y, w, h])
-        boxes.extend(_merge_boxes(pass_boxes, dx=max(3, int(merge_gap * scale)), dy=max(3, int(merge_gap * scale))))
+        boxes.extend(
+            _merge_boxes(
+                pass_boxes,
+                dx=max(3, int(profile["merge_gap"] * scale)),
+                dy=max(3, int(profile["merge_gap"] * scale)),
+            )
+        )
 
-    boxes = _merge_labels_under_details(boxes, width, height)
+    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
     boxes = _dedupe_boxes(boxes)
+    boxes = _remove_composite_boxes(boxes)
 
     if scale != 1.0:
         inv = 1 / scale
