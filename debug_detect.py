@@ -14,6 +14,7 @@ from app.detector import (
     _merge_labels_under_details,
     _dedupe_boxes,
     _format_results,
+    _remove_composite_boxes,
 )
 
 
@@ -32,27 +33,61 @@ def main(image_path: str) -> None:
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    coarse = _cv2_candidates(cv2, thresh, width, height, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2)
-    fine = _cv2_candidates(cv2, thresh, width, height, line_kernel=25, text_kernel=(35, 8), dilate_kernel=10, iterations=1)
-    print(f"Coarse candidates: {len(coarse)}")
-    print(f"Fine candidates:   {len(fine)}")
+    profiles = (
+        ("coarse", {
+            "line_kernel": 45,
+            "text_kernel": (55, 12),
+            "dilate_kernel": 24,
+            "iterations": 2,
+            "min_area_ratio": 0.0008,
+            "max_area_ratio": 0.58,
+            "merge_dx": 14,
+            "merge_dy": 14,
+        }),
+        ("fine", {
+            "line_kernel": 25,
+            "text_kernel": (35, 8),
+            "dilate_kernel": 10,
+            "iterations": 1,
+            "min_area_ratio": 0.00055,
+            "max_area_ratio": 0.40,
+            "merge_dx": 5,
+            "merge_dy": 5,
+        }),
+        ("loose", {
+            "line_kernel": 17,
+            "text_kernel": (24, 6),
+            "dilate_kernel": 7,
+            "iterations": 1,
+            "min_area_ratio": 0.00025,
+            "max_area_ratio": 0.22,
+            "max_aspect": 16,
+            "merge_dx": max(4, int(width * 0.010)),
+            "merge_dy": max(4, int(height * 0.014)),
+        }),
+    )
 
-    merged_coarse = _merge_boxes(coarse, dx=14, dy=14)
-    merged_fine = _merge_boxes(fine, dx=5, dy=5)
-    print(f"After merge - coarse: {len(merged_coarse)}, fine: {len(merged_fine)}")
-    for b in merged_coarse:
-        area_pct = (b[2] * b[3]) / sheet_area * 100
-        print(f"  coarse box {b}  area%={area_pct:.1f}")
-    for b in merged_fine:
-        area_pct = (b[2] * b[3]) / sheet_area * 100
-        print(f"  fine box   {b}  area%={area_pct:.1f}")
-
-    boxes = merged_coarse + merged_fine
+    boxes = []
+    for name, profile in profiles:
+        candidate_profile = dict(profile)
+        merge_dx = candidate_profile.pop("merge_dx")
+        merge_dy = candidate_profile.pop("merge_dy")
+        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+        merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
+        print(f"{name.title()} candidates: {len(candidates)}")
+        print(f"After merge - {name}: {len(merged)}")
+        for b in merged:
+            area_pct = (b[2] * b[3]) / sheet_area * 100
+            print(f"  {name:<6} box {b}  area%={area_pct:.1f}")
+        boxes.extend(merged)
     boxes = _merge_labels_under_details(boxes, width, height)
     print(f"After label-merge: {len(boxes)}")
 
     boxes = _dedupe_boxes(boxes)
     print(f"After dedupe: {len(boxes)}")
+
+    boxes = _remove_composite_boxes(boxes)
+    print(f"After composite suppression: {len(boxes)}")
     for b in boxes:
         area_pct = (b[2] * b[3]) / sheet_area * 100
         print(f"  box {b}  area%={area_pct:.2f}")

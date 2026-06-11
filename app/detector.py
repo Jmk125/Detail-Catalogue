@@ -66,20 +66,72 @@ def _intersection_area(a, b):
 
 
 def _dedupe_boxes(boxes, overlap_threshold=0.86):
-    """Prefer smaller, more precise boxes when multi-scale passes overlap heavily."""
+    """Remove near-identical multi-scale boxes without dropping useful larger crops.
+
+    Earlier versions treated any box fully contained by a smaller one as a
+    duplicate. That is fine when two passes found the same detail with slightly
+    different padding, but it is harmful for sparse/unboxed sheets where a fine
+    pass may find a small callout inside a larger valid detail crop. Require the
+    boxes to be similar enough in size (or to have strong IoU) before considering
+    them duplicates.
+    """
     kept = []
     for box in sorted([list(map(int, b[:4])) for b in boxes], key=lambda b: (b[2] * b[3], b[1], b[0])):
         area = max(1, box[2] * box[3])
         duplicate = False
         for existing in kept:
             existing_area = max(1, existing[2] * existing[3])
-            overlap = _intersection_area(box, existing) / min(area, existing_area)
-            if overlap >= overlap_threshold:
+            intersection = _intersection_area(box, existing)
+            overlap = intersection / min(area, existing_area)
+            iou = intersection / max(1, area + existing_area - intersection)
+            size_similarity = min(area, existing_area) / max(area, existing_area)
+            if overlap >= overlap_threshold and (size_similarity >= 0.45 or iou >= 0.55):
                 duplicate = True
                 break
         if not duplicate:
             kept.append(box)
     return sorted(kept, key=lambda b: (b[1], b[0]))
+
+
+
+
+def _remove_composite_boxes(boxes):
+    """Drop large boxes that merely wrap several smaller detected details.
+
+    Sparse passes intentionally add small candidates for loose details and labels.
+    Occasionally a coarser pass also returns a column/row-sized box around several
+    of those candidates. Keep the smaller reviewable detail boxes instead of the
+    composite wrapper.
+    """
+    normalized = [list(map(int, b[:4])) for b in boxes]
+    keep = []
+    for box in normalized:
+        area = max(1, box[2] * box[3])
+        child_centers_x = []
+        child_centers_y = []
+        for other in normalized:
+            if other is box:
+                continue
+            other_area = max(1, other[2] * other[3])
+            if other_area >= area * 0.60:
+                continue
+            if _intersection_area(box, other) / other_area < 0.88:
+                continue
+            child_centers_x.append(other[0] + other[2] / 2)
+            child_centers_y.append(other[1] + other[3] / 2)
+
+        wraps_multiple_rows = (
+            len(child_centers_y) >= 3
+            and max(child_centers_y) - min(child_centers_y) > box[3] * 0.35
+        )
+        wraps_multiple_columns = (
+            len(child_centers_x) >= 3
+            and max(child_centers_x) - min(child_centers_x) > box[2] * 0.35
+        )
+        if wraps_multiple_rows or wraps_multiple_columns:
+            continue
+        keep.append(box)
+    return keep
 
 
 def _horizontal_overlap_ratio(a, b):
@@ -130,9 +182,13 @@ def _merge_labels_under_details(boxes, sheet_w, sheet_h):
 
                 overlap = _horizontal_overlap_ratio(cur, cand)
                 center_close = _center_distance_x(cur, cand) < max(cw, bw) * 0.40
-                near_below = gap <= sheet_h * 0.065
-                label_like_height = bh <= max(ch * 0.55, sheet_h * 0.075)
-                not_huge = (bw * bh) < (cw * ch) * 0.75
+                # Some design teams place detail tags/titles noticeably below the
+                # graphic. Allow a longer reach only when the lower candidate is
+                # horizontally centered like a label, which avoids broadly merging
+                # stacked details.
+                near_below = gap <= sheet_h * (0.10 if center_close else 0.065)
+                label_like_height = bh <= min(max(ch * 0.55, sheet_h * 0.075), sheet_h * 0.10)
+                not_huge = (bw * bh) < (cw * ch) * 0.45
                 reasonable_width = bw <= cw * 1.65 or center_close
 
                 if near_below and label_like_height and not_huge and reasonable_width and (overlap >= 0.18 or center_close):
@@ -177,7 +233,21 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
-def _cv2_candidates(cv2, thresh, width, height, *, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2):
+def _cv2_candidates(
+    cv2,
+    thresh,
+    width,
+    height,
+    *,
+    line_kernel=45,
+    text_kernel=(55, 12),
+    dilate_kernel=24,
+    iterations=2,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
+):
     sheet_area = width * height
     kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
     kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
@@ -197,10 +267,10 @@ def _cv2_candidates(cv2, thresh, width, height, *, line_kernel=45, text_kernel=(
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
         area = w * h
-        if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+        if area < sheet_area * min_area_ratio or area > sheet_area * max_area_ratio:
             continue
         aspect = w / max(h, 1)
-        if aspect > 12 or aspect < 0.05:
+        if aspect > max_aspect or aspect < min_aspect:
             continue
         if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
             continue
@@ -232,14 +302,53 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     )
 
     # Multi-scale detection: the coarse pass behaves like the original detector,
-    # while the fine pass keeps packed detail sheets from collapsing into a few
-    # large blobs when details are tight together.
-    coarse = _cv2_candidates(cv2, thresh, width, height, line_kernel=45, text_kernel=(55, 12), dilate_kernel=24, iterations=2)
-    fine = _cv2_candidates(cv2, thresh, width, height, line_kernel=25, text_kernel=(35, 8), dilate_kernel=10, iterations=1)
+    # the fine pass keeps packed detail sheets from collapsing into a few large
+    # blobs, and the loose pass improves sparse/unboxed detail sheets where
+    # linework, callouts, and separated labels do not form one strong contour.
+    profiles = (
+        {
+            "line_kernel": 45,
+            "text_kernel": (55, 12),
+            "dilate_kernel": 24,
+            "iterations": 2,
+            "min_area_ratio": 0.0008,
+            "max_area_ratio": 0.58,
+            "merge_dx": 14,
+            "merge_dy": 14,
+        },
+        {
+            "line_kernel": 25,
+            "text_kernel": (35, 8),
+            "dilate_kernel": 10,
+            "iterations": 1,
+            "min_area_ratio": 0.00055,
+            "max_area_ratio": 0.40,
+            "merge_dx": 5,
+            "merge_dy": 5,
+        },
+        {
+            "line_kernel": 17,
+            "text_kernel": (24, 6),
+            "dilate_kernel": 7,
+            "iterations": 1,
+            "min_area_ratio": 0.00025,
+            "max_area_ratio": 0.22,
+            "max_aspect": 16,
+            "merge_dx": max(4, int(width * 0.010)),
+            "merge_dy": max(4, int(height * 0.014)),
+        },
+    )
 
-    boxes = _merge_boxes(coarse, dx=14, dy=14) + _merge_boxes(fine, dx=5, dy=5)
+    boxes = []
+    for profile in profiles:
+        candidate_profile = dict(profile)
+        merge_dx = candidate_profile.pop("merge_dx")
+        merge_dy = candidate_profile.pop("merge_dy")
+        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+        boxes.extend(_merge_boxes(candidates, dx=merge_dx, dy=merge_dy))
     boxes = _merge_labels_under_details(boxes, width, height)
     boxes = _dedupe_boxes(boxes)
+    boxes = _remove_composite_boxes(boxes)
 
     if scale < 1.0:
         inv = 1.0 / scale
@@ -307,32 +416,44 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
     if dilate % 2 == 0:
         dilate += 1
     boxes = []
-    for factor, merge_gap in ((1.0, 14), (0.45, 5)):
-        pass_dilate = max(3, int(round(dilate * factor)))
+    profiles = (
+        {"factor": 1.0, "merge_gap": 14, "min_area_ratio": 0.0008, "max_area_ratio": 0.58, "max_aspect": 12},
+        {"factor": 0.45, "merge_gap": 5, "min_area_ratio": 0.00055, "max_area_ratio": 0.40, "max_aspect": 12},
+        {"factor": 0.32, "merge_gap": max(4, int(min(width, height) * 0.010)), "min_area_ratio": 0.00025, "max_area_ratio": 0.22, "max_aspect": 16},
+    )
+    for profile in profiles:
+        pass_dilate = max(3, int(round(dilate * profile["factor"])))
         if pass_dilate % 2 == 0:
             pass_dilate += 1
         pass_img = mask_img.filter(ImageFilter.MaxFilter(pass_dilate))
-        if factor >= 1.0:
+        if profile["factor"] >= 1.0:
             pass_img = pass_img.filter(ImageFilter.MaxFilter(max(3, pass_dilate // 2 * 2 + 1)))
         mask = np.asarray(pass_img) > 0
 
         pass_boxes = []
         for x, y, w, h, pixels in _connected_components(mask):
             area = w * h
-            if area < sheet_area * 0.0008 or area > sheet_area * 0.58:
+            if area < sheet_area * profile["min_area_ratio"] or area > sheet_area * profile["max_area_ratio"]:
                 continue
             aspect = w / max(h, 1)
-            if aspect > 12 or aspect < 0.05:
+            if aspect > profile["max_aspect"] or aspect < 0.05:
                 continue
-            if pixels < sheet_area * 0.00025:
+            if pixels < sheet_area * 0.00018:
                 continue
             if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
                 continue
             pass_boxes.append([x, y, w, h])
-        boxes.extend(_merge_boxes(pass_boxes, dx=max(3, int(merge_gap * scale)), dy=max(3, int(merge_gap * scale))))
+        boxes.extend(
+            _merge_boxes(
+                pass_boxes,
+                dx=max(3, int(profile["merge_gap"] * scale)),
+                dy=max(3, int(profile["merge_gap"] * scale)),
+            )
+        )
 
     boxes = _merge_labels_under_details(boxes, width, height)
     boxes = _dedupe_boxes(boxes)
+    boxes = _remove_composite_boxes(boxes)
 
     if scale != 1.0:
         inv = 1 / scale
