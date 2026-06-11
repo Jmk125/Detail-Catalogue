@@ -491,6 +491,20 @@ def _cv2_candidates_detailed(
     )
     contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+
+def _filter_cv2_contours(
+    cv2,
+    contours,
+    width,
+    height,
+    *,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
+    stats_prefix="",
+):
+    sheet_area = width * height
     boxes = []
     rejected = []
     for c in contours:

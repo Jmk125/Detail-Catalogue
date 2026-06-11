@@ -66,6 +66,44 @@ def list_design_teams(q: str = "") -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def list_settings_entities() -> dict[str, Any]:
+    with connect() as conn:
+        _register_project_designer_firms(conn)
+        projects = [
+            dict(r)
+            for r in conn.execute(
+                """
+                SELECT projects.id, projects.project_name, dt.name AS design_team,
+                       COUNT(DISTINCT details.id) AS detail_count, COUNT(DISTINCT source_files.id) AS source_count
+                FROM projects
+                LEFT JOIN design_teams dt ON dt.id = projects.design_team_id
+                LEFT JOIN details ON details.project_id = projects.id
+                LEFT JOIN source_files ON source_files.project_id = projects.id
+                GROUP BY projects.id
+                ORDER BY projects.upload_date DESC
+                """
+            )
+        ]
+        firms = [
+            dict(r)
+            for r in conn.execute(
+                """
+                SELECT design_teams.id, design_teams.name,
+                       COUNT(DISTINCT primary_projects.id) AS primary_project_count,
+                       COUNT(DISTINCT designer_projects.project_id) AS designer_project_count,
+                       COUNT(DISTINCT details.id) AS detail_count
+                FROM design_teams
+                LEFT JOIN projects primary_projects ON primary_projects.design_team_id = design_teams.id
+                LEFT JOIN project_designers designer_projects ON lower(designer_projects.firm_name) = lower(design_teams.name)
+                LEFT JOIN details ON details.project_id = primary_projects.id OR details.project_id = designer_projects.project_id
+                GROUP BY design_teams.id
+                ORDER BY design_teams.name
+                """
+            )
+        ]
+        return {"projects": projects, "design_teams": firms}
+
+
 def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None, designers: list[dict[str, str]] | None = None) -> None:
     settings = settings or get_settings()
     pdir = project_dir(project_id)
@@ -547,11 +585,29 @@ def ai_scan_status() -> dict[str, Any]:
     with connect() as conn:
         detail_counts = {r["ai_status"]: r["c"] for r in conn.execute("SELECT ai_status, COUNT(*) AS c FROM details GROUP BY ai_status")}
         job_counts = {r["status"]: r["c"] for r in conn.execute("SELECT status, COUNT(*) AS c FROM ai_jobs GROUP BY status")}
+        running_details = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT details.id, details.detail_title, details.detail_number, details.sheet_number,
+                       projects.project_name, source_files.filename AS source_filename, pages.page_number
+                FROM ai_jobs
+                JOIN details ON details.id = ai_jobs.detail_id
+                JOIN projects ON projects.id = details.project_id
+                JOIN source_files ON source_files.id = details.source_file_id
+                JOIN pages ON pages.id = details.page_id
+                WHERE ai_jobs.status='running'
+                ORDER BY ai_jobs.started_at, ai_jobs.created_at
+                """
+            )
+        ]
     return {
         "details": detail_counts,
         "jobs": job_counts,
         "unscanned": sum(c for status, c in detail_counts.items() if status != "complete"),
         "active": job_counts.get("pending", 0) + job_counts.get("running", 0),
+        "running_detail_ids": [d["id"] for d in running_details],
+        "running_details": running_details,
     }
 
 
@@ -778,6 +834,85 @@ def delete_detail(detail_id: str) -> bool:
     with connect() as conn:
         conn.execute("DELETE FROM details WHERE id=?", (detail_id,))
     return True
+
+
+def delete_project_record(project_id: str, delete_items: bool, confirm_name: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT projects.id, projects.project_name, dt.name AS design_team
+            FROM projects LEFT JOIN design_teams dt ON dt.id = projects.design_team_id
+            WHERE projects.id=?
+            """,
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        expected = (row["project_name"] or "").strip()
+        if confirm_name.strip() != expected:
+            raise ValueError("Confirmation does not match the project name.")
+        detail_count = conn.execute("SELECT COUNT(*) AS c FROM details WHERE project_id=?", (project_id,)).fetchone()["c"]
+        source_count = conn.execute("SELECT COUNT(*) AS c FROM source_files WHERE project_id=?", (project_id,)).fetchone()["c"]
+        if delete_items:
+            conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        else:
+            conn.execute("UPDATE projects SET project_name='', design_team_id=NULL WHERE id=?", (project_id,))
+            conn.execute("DELETE FROM project_designers WHERE project_id=?", (project_id,))
+    if delete_items:
+        shutil.rmtree(project_dir(project_id), ignore_errors=True)
+    return {
+        "deleted": True,
+        "mode": "items" if delete_items else "metadata",
+        "project_id": project_id,
+        "project_name": expected,
+        "detail_count": detail_count,
+        "source_count": source_count,
+    }
+
+
+def delete_design_team_record(design_team_id: int, delete_items: bool, confirm_name: str) -> dict[str, Any] | None:
+    project_ids: list[str] = []
+    with connect() as conn:
+        row = conn.execute("SELECT id, name FROM design_teams WHERE id=?", (design_team_id,)).fetchone()
+        if not row:
+            return None
+        expected = (row["name"] or "").strip()
+        if confirm_name.strip() != expected:
+            raise ValueError("Confirmation does not match the design firm name.")
+        project_rows = conn.execute(
+            """
+            SELECT DISTINCT projects.id
+            FROM projects
+            LEFT JOIN project_designers pd ON pd.project_id = projects.id
+            WHERE projects.design_team_id=? OR lower(pd.firm_name)=lower(?)
+            """,
+            (design_team_id, expected),
+        ).fetchall()
+        project_ids = [r["id"] for r in project_rows]
+        detail_count = 0
+        if project_ids:
+            placeholders = ",".join(["?"] * len(project_ids))
+            detail_count = conn.execute(f"SELECT COUNT(*) AS c FROM details WHERE project_id IN ({placeholders})", project_ids).fetchone()["c"]
+        if delete_items:
+            for pid in project_ids:
+                conn.execute("DELETE FROM projects WHERE id=?", (pid,))
+            conn.execute("DELETE FROM design_teams WHERE id=?", (design_team_id,))
+        else:
+            conn.execute("UPDATE projects SET design_team_id=NULL WHERE design_team_id=?", (design_team_id,))
+            conn.execute("DELETE FROM project_designers WHERE lower(firm_name)=lower(?)", (expected,))
+            conn.execute("DELETE FROM design_teams WHERE id=?", (design_team_id,))
+    if delete_items:
+        for pid in project_ids:
+            shutil.rmtree(project_dir(pid), ignore_errors=True)
+    return {
+        "deleted": True,
+        "mode": "items" if delete_items else "metadata",
+        "design_team_id": design_team_id,
+        "name": expected,
+        "project_count": len(project_ids),
+        "project_ids": project_ids,
+        "detail_count": detail_count,
+    }
 
 
 def rescan_detail(detail_id: str) -> dict[str, Any] | None:

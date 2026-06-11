@@ -2,8 +2,13 @@
 
 Usage (on the Pi, inside the venv):
     python debug_detect.py /home/pi/detail-catalogue/data/projects/<project_id>/pages/page_0001.webp
+
+By default this mirrors production detection by resizing large sheets down to a
+2200px max dimension before detecting, then scaling boxes back to the original
+image size. Use --no-scale to inspect the original full-resolution behavior.
 """
-import sys
+import argparse
+import json
 from pathlib import Path
 
 import cv2
@@ -21,15 +26,108 @@ from app.detector import (
 )
 
 
-def main(image_path: str) -> None:
+def _scale_box(box: list[int], scale: float) -> list[int]:
+    if scale == 1.0:
+        return list(map(int, box))
+    inv = 1.0 / scale
+    return [int(round(v * inv)) for v in box]
+
+
+def _draw_overlay(image_path: str, results: list[dict], output_path: Path) -> None:
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"Could not write overlay because image could not be read: {image_path}")
+        return
+
+    for result in results:
+        x = int(round(result["x"]))
+        y = int(round(result["y"]))
+        w = int(round(result["w"]))
+        h = int(round(result["h"]))
+        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 8)
+        cv2.putText(
+            img,
+            result.get("id", "box"),
+            (x, max(35, y - 12)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (255, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), img)
+    print(f"Overlay written: {output_path}")
+
+
+def _print_candidate_diagnostics(
+    label: str,
+    stats: dict[str, int],
+    rejected_examples: dict[str, list[dict]],
+    scale: float,
+) -> None:
+    _print_candidate_stats(label, stats, rejected_examples, scale)
+    if stats.get("internal_raw_contours"):
+        _print_candidate_stats(label, stats, rejected_examples, scale, prefix="internal_")
+
+
+def _print_candidate_stats(
+    label: str,
+    stats: dict[str, int],
+    rejected_examples: dict[str, list[dict]],
+    scale: float,
+    *,
+    prefix: str = "",
+) -> None:
+    rejected_parts = [
+        f"{key}={stats.get(prefix + key, 0)}"
+        for key in ("too_small", "too_large", "bad_aspect", "title_block")
+        if stats.get(prefix + key, 0)
+    ]
+    suffix = f"; rejected {'; '.join(rejected_parts)}" if rejected_parts else ""
+    source = " internal" if prefix else ""
+    print(
+        f"{label}{source} raw contours: {stats.get(prefix + 'raw_contours', 0)}; "
+        f"kept: {stats.get(prefix + 'kept', 0)}{suffix}"
+    )
+
+    for reason in ("too_small", "too_large", "bad_aspect", "title_block"):
+        key = prefix + reason
+        examples = sorted(
+            rejected_examples.get(key, []),
+            key=lambda item: item["area_ratio"],
+            reverse=True,
+        )[:3]
+        for item in examples:
+            box = item["box"]
+            original_b = _scale_box(box, scale)
+            print(
+                f"  rejected {key:<20} box {box}  original={original_b}  "
+                f"area%={item['area_ratio'] * 100:.3f}  aspect={item['aspect']:.2f}"
+            )
+
+
+def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool = False) -> None:
     img = cv2.imread(image_path)
     if img is None:
         print(f"Could not read image: {image_path}")
         return
 
+    orig_height, orig_width = img.shape[:2]
+    scale = min(1.0, target / max(orig_width, orig_height)) if target else 1.0
+    if scale < 1.0:
+        img = cv2.resize(
+            img,
+            (int(round(orig_width * scale)), int(round(orig_height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+
     height, width = img.shape[:2]
     sheet_area = width * height
-    print(f"Image size: {width} x {height} (area={sheet_area})")
+    print(f"Original image size: {orig_width} x {orig_height} (area={orig_width * orig_height})")
+    print(f"Detection image size: {width} x {height} (area={sheet_area})")
+    print(f"Production scale: {scale:.6f}" if scale < 1.0 else "Production scale: none")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     thresh = cv2.adaptiveThreshold(
@@ -81,11 +179,41 @@ def main(image_path: str) -> None:
     print(f"After composite suppression: {len(boxes)}")
     for b in boxes:
         area_pct = (b[2] * b[3]) / sheet_area * 100
-        print(f"  box {b}  area%={area_pct:.2f}")
+        original_b = _scale_box(b, scale)
+        print(f"  box {b}  original={original_b}  area%={area_pct:.2f}")
 
-    results = _format_results(boxes, width, height, 80)
-    print(f"Final results after area filter (0.15%-62%): {len(results)}")
+    original_boxes = [_scale_box(b, scale) for b in boxes]
+    results = _format_results(original_boxes, orig_width, orig_height, 80)
+    print(f"Final app-style results after area filter (0.15%-62%): {len(results)}")
+    print(json.dumps(results, indent=2))
+
+    if overlay_path is not False:
+        if overlay_path is None:
+            source = Path(image_path)
+            overlay_path = str(source.with_name(f"{source.stem}.debug_boxes{source.suffix}"))
+        _draw_overlay(image_path, results, Path(str(overlay_path)))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Debug detail box detection stages for a rendered page image.")
+    parser.add_argument("image_path", help="Rendered page image to inspect")
+    parser.add_argument(
+        "--no-scale",
+        action="store_true",
+        help="Run detection at the image's original size instead of production's 2200px max dimension.",
+    )
+    parser.add_argument(
+        "--target",
+        type=int,
+        default=2200,
+        help="Production detection max dimension to emulate. Default: 2200.",
+    )
+    parser.add_argument(
+        "--overlay",
+        nargs="?",
+        const=None,
+        default=False,
+        help="Write a debug overlay image. Optionally pass an output path; default is <image>.debug_boxes.<ext>.",
+    )
+    args = parser.parse_args()
+    main(args.image_path, target=0 if args.no_scale else args.target, overlay_path=args.overlay)

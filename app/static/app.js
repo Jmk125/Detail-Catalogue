@@ -14,6 +14,9 @@ let drawState = null;
 let deletedBoxPatterns = [];
 let sheetBox = null;
 let sheetDragState = null;
+let compareMode = false;
+const compareDetailIds = new Set();
+const compareDetails = new Map();
 
 const $ = (id) => document.getElementById(id);
 
@@ -58,11 +61,20 @@ $("approveBtn").addEventListener("click", approveSheet);
 $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
+$("compareModeBtn").addEventListener("click", toggleCompareMode);
+$("goToLibraryCompareBtn").addEventListener("click", () => enableCompareMode({ switchToLibrary: true }));
+$("clearCompareBtn").addEventListener("click", clearComparison);
 $("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
 $("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
 $("noteModal").addEventListener("click", (e) => { if (e.target === $("noteModal")) $("noteModal").classList.add("hidden"); });
+$("settingsBtn").addEventListener("click", openSettings);
+$("closeSettingsBtn").addEventListener("click", closeSettings);
+$("settingsModal").addEventListener("click", (e) => { if (e.target === $("settingsModal")) closeSettings(); });
+for (const btn of document.querySelectorAll(".settings-tab")) {
+  btn.addEventListener("click", () => showSettingsPanel(btn.dataset.settingsPanel));
+}
 for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
@@ -470,6 +482,20 @@ function showTab(tabId) {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
   }
   if (tabId === "libraryTab") { loadLibraryFacets(); loadLibrary(); }
+  if (tabId === "compareTab") renderComparison();
+}
+
+function setCompareMode(enabled) {
+  compareMode = Boolean(enabled);
+  document.body.classList.toggle("compare-mode", compareMode);
+  $("libraryPanel")?.classList.toggle("compare-mode", compareMode);
+  updateCompareModeButton();
+  updateVisibleCompareControls();
+}
+
+function enableCompareMode({ switchToLibrary = false } = {}) {
+  setCompareMode(true);
+  if (switchToLibrary) showTab("libraryTab");
 }
 
 async function loadDesignTeams() {
@@ -1088,12 +1114,110 @@ async function loadDetails() {
   for (const d of pageDetails) div.appendChild(detailCard(d, true));
 }
 
-function detailCard(d, compact = false, list = false) {
+
+function disciplineLabel(discipline) {
+  const normalized = normalizeDiscipline(discipline);
+  const labels = {
+    architectural: "Architectural",
+    structural: "Structural",
+    civil: "Civil",
+    mechanical: "Mechanical/HVAC",
+    electrical: "Electrical",
+    plumbing: "Plumbing",
+    "fire protection": "Fire Suppression",
+    "technology/security": "Technology",
+    unknown: "Unknown",
+  };
+  return labels[normalized] || titleCase(discipline || "unknown");
+}
+
+function normalizeDiscipline(discipline) {
+  const value = String(discipline || "unknown").trim().toLowerCase();
+  if (value.includes("civil")) return "civil";
+  if (value.includes("struct")) return "structural";
+  if (value.includes("arch")) return "architectural";
+  if (value.includes("mech") || value.includes("hvac")) return "mechanical";
+  if (value.includes("plumb")) return "plumbing";
+  if (value.includes("elect")) return "electrical";
+  if (value.includes("tech") || value.includes("security")) return "technology/security";
+  if (value.includes("fire")) return "fire protection";
+  return value || "unknown";
+}
+
+function disciplineClass(discipline) {
+  return `discipline-${normalizeDiscipline(discipline).replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function disciplineBadge(discipline) {
+  return `<span class="discipline-badge ${disciplineClass(discipline)}">${escapeHtml(disciplineLabel(discipline))}</span>`;
+}
+
+function titleCase(value) {
+  return String(value || "").replace(/[-_/]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function toggleCompareMode() {
+  setCompareMode(!compareMode);
+}
+
+function updateCompareModeButton() {
+  const btn = $("compareModeBtn");
+  if (!btn) return;
+  btn.textContent = compareMode ? "Done Selecting" : "Compare Details";
+  btn.classList.toggle("primary-btn", compareMode);
+  btn.setAttribute("aria-pressed", compareMode ? "true" : "false");
+}
+
+function setDetailCompared(detail, compared) {
+  const detailId = String(detail.id);
+  if (compared) {
+    compareDetailIds.add(detailId);
+    compareDetails.set(detailId, detail);
+  } else {
+    compareDetailIds.delete(detailId);
+    compareDetails.delete(detailId);
+  }
+  renderComparison();
+  updateVisibleCompareControls();
+}
+
+function updateVisibleCompareControls() {
+  document.querySelectorAll(".compare-select").forEach(input => {
+    input.checked = compareDetailIds.has(input.value);
+  });
+}
+
+function clearComparison() {
+  compareDetailIds.clear();
+  compareDetails.clear();
+  updateVisibleCompareControls();
+  renderComparison();
+  loadLibrary();
+}
+
+function renderComparison() {
+  const results = $("compareResults");
+  if (!results) return;
+  const details = Array.from(compareDetailIds).map(id => compareDetails.get(id)).filter(Boolean);
+  const summary = $("compareSummary");
+  if (summary) summary.textContent = details.length ? `${details.length} detail${details.length === 1 ? "" : "s"} selected for comparison.` : "Select details from the library to compare them side by side.";
+  results.innerHTML = "";
+  if (!details.length) {
+    results.innerHTML = `<div class="empty-compare"><strong>No details selected yet.</strong><br>Use the Detail Library’s Compare Details button to turn on card checkboxes, then select details to compare.</div>`;
+    return;
+  }
+  for (const d of details) results.appendChild(detailCard(d, false, false, true));
+}
+
+function detailCard(d, compact = false, list = false, comparing = false) {
   const card = document.createElement("div");
-  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "");
+  const detailId = String(d.id);
+  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "") + (compareDetailIds.has(detailId) ? " compared" : "") + (comparing ? " compare-card" : "");
   const hasNote = Boolean((d.notes || "").trim());
   const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
-  const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}</div>`;
+  const comparePicker = (!compact && !comparing) ? `<label class="compare-picker" title="Select detail for comparison"><input class="compare-select" type="checkbox" value="${escapeAttr(detailId)}" ${compareDetailIds.has(detailId) ? "checked" : ""} /> Compare</label>` : "";
+  const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}${comparePicker}</div>`;
+  const badge = disciplineBadge(d.discipline || "unknown");
 
   if (list) {
     const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
@@ -1105,7 +1229,7 @@ function detailCard(d, compact = false, list = false) {
       <div class="list-card-info">
         <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong>
         <small>${escapeHtml(d.project_name || "Unnamed project")}${d.design_team ? ` — ${escapeHtml(d.design_team)}` : ""}</small>
-        <small>${escapeHtml(d.discipline || "unknown")}${numbers ? ` · ${escapeHtml(numbers)}` : ""}</small>
+        <div class="card-meta-row">${badge}${numbers ? `<small>${escapeHtml(numbers)}</small>` : ""}</div>
         ${summary ? `<p class="list-summary">${escapeHtml(summary)}</p>` : ""}
         ${tags ? `<div class="list-tags">${tags}</div>` : ""}
         <div class="list-meta">
@@ -1119,7 +1243,7 @@ function detailCard(d, compact = false, list = false) {
       ${thumb}
       <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
       <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
-      <small>${escapeHtml(d.discipline || "unknown")}</small>
+      <div class="card-meta-row">${badge}</div>
     `;
   }
   card.querySelector(".bookmark-badge").addEventListener("click", async (e) => {
@@ -1130,6 +1254,21 @@ function detailCard(d, compact = false, list = false) {
   if (noteBtn) noteBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     showNotePopup(d);
+  });
+  const compareSelect = card.querySelector(".compare-select");
+  const comparePickerLabel = card.querySelector(".compare-picker");
+  if (comparePickerLabel && compareSelect) comparePickerLabel.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (e.target === compareSelect) return;
+    e.preventDefault();
+    compareSelect.checked = !compareSelect.checked;
+    compareSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  if (compareSelect) compareSelect.addEventListener("click", (e) => e.stopPropagation());
+  if (compareSelect) compareSelect.addEventListener("change", (e) => {
+    e.stopPropagation();
+    setDetailCompared(d, compareSelect.checked);
+    card.classList.toggle("compared", compareSelect.checked);
   });
   card.addEventListener("click", () => openDetail(d.id));
   return card;
@@ -1143,11 +1282,42 @@ function showNotePopup(d) {
 }
 
 let scanPollTimer = null;
+let highlightedScanDetailIds = new Set();
 
 function setScanStatus(text) {
   const span = $("scanStatus");
   span.textContent = text || "";
   span.classList.toggle("hidden", !text);
+}
+
+function scanDetailLabel(detail) {
+  if (!detail) return "detail";
+  const title = detail.detail_title || "Untitled detail";
+  const sheet = detail.sheet_number ? `sheet ${detail.sheet_number}` : (detail.page_number ? `page ${detail.page_number}` : "");
+  return [title, sheet].filter(Boolean).join(" on ");
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function updateScanHighlights(status = {}) {
+  highlightedScanDetailIds = new Set((status.running_detail_ids || []).map(String));
+  document.querySelectorAll(".detail-card.scan-running").forEach(card => {
+    if (!highlightedScanDetailIds.has(card.dataset.detailId)) card.classList.remove("scan-running");
+  });
+  for (const id of highlightedScanDetailIds) {
+    document.querySelectorAll(`.detail-card[data-detail-id="${cssEscape(id)}"]`).forEach(card => card.classList.add("scan-running"));
+  }
+}
+
+function scanStatusMessage(status) {
+  const running = status.running_details || [];
+  const active = status.active || 0;
+  if (running.length === 1) return `AI scanning ${scanDetailLabel(running[0])} (${active} job${active === 1 ? "" : "s"} remaining)...`;
+  if (running.length > 1) return `AI scanning ${running.length} details (${active} job${active === 1 ? "" : "s"} remaining)...`;
+  return `AI scanning in background: ${active} job${active === 1 ? "" : "s"} remaining...`;
 }
 
 async function scanUnscannedDetails() {
@@ -1162,6 +1332,7 @@ async function scanUnscannedDetails() {
       setTimeout(() => { if (!scanPollTimer) setScanStatus(""); }, 5000);
       return;
     }
+    updateScanHighlights(data.status);
     setScanStatus(`Queued ${data.queued} detail(s). AI scanning is running in the background...`);
     startScanPolling();
   } finally {
@@ -1175,9 +1346,11 @@ function startScanPolling() {
     const res = await fetch("/api/library/scan-status");
     if (!res.ok) return;
     const s = await res.json();
+    updateScanHighlights(s);
     if (s.active > 0) {
-      setScanStatus(`AI scanning in background: ${s.active} job(s) remaining...`);
+      setScanStatus(scanStatusMessage(s));
     } else {
+      updateScanHighlights({ running_detail_ids: [] });
       clearInterval(scanPollTimer);
       scanPollTimer = null;
       setScanStatus("Background AI scan finished. Library refreshed.");
@@ -1202,6 +1375,167 @@ async function toggleBookmark(detail) {
 
 function selectedCheckboxValues(containerId) {
   return Array.from($(containerId).querySelectorAll("input[type=checkbox]:checked")).map(input => input.value);
+}
+
+async function openSettings() {
+  $("settingsModal").classList.remove("hidden");
+  setSettingsMessage("");
+  await loadSettingsEntities();
+}
+
+function closeSettings() {
+  $("settingsModal").classList.add("hidden");
+}
+
+function showSettingsPanel(panelId) {
+  for (const panel of document.querySelectorAll(".settings-panel")) {
+    panel.classList.toggle("hidden", panel.id !== panelId);
+    panel.classList.toggle("active", panel.id === panelId);
+  }
+  for (const btn of document.querySelectorAll(".settings-tab")) {
+    btn.classList.toggle("active", btn.dataset.settingsPanel === panelId);
+  }
+}
+
+function setSettingsMessage(message, isError = false) {
+  const el = $("settingsMessage");
+  el.textContent = message || "";
+  el.classList.toggle("hidden", !message);
+  el.classList.toggle("error", Boolean(isError));
+}
+
+async function loadSettingsEntities() {
+  const res = await fetch("/api/manage/entities");
+  if (!res.ok) {
+    setSettingsMessage(await res.text(), true);
+    return;
+  }
+  const data = await res.json();
+  renderSettingsProjects(data.projects || []);
+  renderSettingsFirms(data.design_teams || []);
+}
+
+function renderSettingsProjects(projects) {
+  const container = $("settingsProjectsList");
+  container.innerHTML = "";
+  if (!projects.length) {
+    container.innerHTML = `<div class="settings-empty">No projects have been created yet.</div>`;
+    return;
+  }
+  for (const project of projects) {
+    const name = project.project_name || "";
+    const displayName = name || "(blank project name)";
+    const item = document.createElement("article");
+    item.className = "settings-entity";
+    item.innerHTML = `
+      <div class="settings-entity-title">
+        <div>
+          <strong>${escapeHtml(displayName)}</strong>
+          <small>Architect / design firm: ${escapeHtml(project.design_team || "None")}</small>
+        </div>
+        <span class="settings-entity-meta">${Number(project.detail_count || 0)} details • ${Number(project.source_count || 0)} source PDFs</span>
+      </div>
+      ${settingsDeleteForm("project", project.id, name, displayName)}
+    `;
+    wireSettingsDeleteForm(item, "project", project.id, name);
+    container.appendChild(item);
+  }
+}
+
+function renderSettingsFirms(firms) {
+  const container = $("settingsFirmsList");
+  container.innerHTML = "";
+  if (!firms.length) {
+    container.innerHTML = `<div class="settings-empty">No design firms have been saved yet.</div>`;
+    return;
+  }
+  for (const firm of firms) {
+    const name = firm.name || "";
+    const primaryCount = Number(firm.primary_project_count || 0);
+    const designerCount = Number(firm.designer_project_count || 0);
+    const item = document.createElement("article");
+    item.className = "settings-entity";
+    item.innerHTML = `
+      <div class="settings-entity-title">
+        <div>
+          <strong>${escapeHtml(name)}</strong>
+          <small>${primaryCount} primary projects • ${designerCount} engineer listings</small>
+        </div>
+        <span class="settings-entity-meta">${Number(firm.detail_count || 0)} associated details</span>
+      </div>
+      ${settingsDeleteForm("firm", firm.id, name, name)}
+    `;
+    wireSettingsDeleteForm(item, "firm", firm.id, name);
+    container.appendChild(item);
+  }
+}
+
+function settingsDeleteForm(type, id, confirmName, displayName) {
+  const itemLabel = type === "project" ? "project" : "design firm";
+  const associationLabel = type === "project" ? "all pages, crops, details, and source files in this project" : "all projects, source files, crops, and details associated with this firm";
+  const metadataLabel = type === "project" ? "only the project name, primary firm, and engineer firm labels; keep this project's details" : "only this firm's name/labels; keep associated project details";
+  return `
+    <div class="settings-delete-form" data-type="${escapeAttr(type)}" data-id="${escapeAttr(id)}" data-confirm-name="${escapeAttr(confirmName)}">
+      <div class="settings-delete-options" role="radiogroup" aria-label="Delete mode for ${escapeAttr(displayName)}">
+        <label><input type="radio" name="deleteMode_${escapeAttr(type)}_${escapeAttr(id)}" value="metadata" checked /> Delete ${metadataLabel}.</label>
+        <label><input type="radio" name="deleteMode_${escapeAttr(type)}_${escapeAttr(id)}" value="items" /> Delete ${associationLabel}.</label>
+      </div>
+      <div class="settings-confirm-row">
+        <label>Type <code>${escapeHtml(confirmName || "(blank)")}</code> to confirm
+          <input type="text" class="settings-confirm-input" autocomplete="off" ${confirmName ? "" : "placeholder=\"Leave blank to confirm blank name\""} />
+        </label>
+        <button type="button" class="danger-btn settings-delete-btn" disabled>Delete ${escapeHtml(itemLabel)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireSettingsDeleteForm(item, type, id, confirmName) {
+  const input = item.querySelector(".settings-confirm-input");
+  const btn = item.querySelector(".settings-delete-btn");
+  const update = () => { btn.disabled = input.value.trim() !== confirmName.trim(); };
+  input.addEventListener("input", update);
+  update();
+  btn.addEventListener("click", async () => {
+    const mode = item.querySelector("input[type=radio]:checked")?.value || "metadata";
+    const deleteItems = mode === "items";
+    const itemLabel = type === "project" ? "project" : "design firm";
+    const warning = deleteItems
+      ? `This will permanently delete the ${itemLabel} and all associated items. Continue?`
+      : `This will delete only the ${itemLabel} name/firm labels and keep associated details. Continue?`;
+    if (!confirm(warning)) return;
+    btn.disabled = true;
+    btn.textContent = "Deleting...";
+    try {
+      const endpoint = type === "project" ? `/api/manage/projects/${id}` : `/api/manage/design-teams/${id}`;
+      const res = await fetch(endpoint, {
+        method: "DELETE",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ delete_items: deleteItems, confirm_name: input.value.trim() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const result = await res.json();
+      setSettingsMessage(`${deleteItems ? "Deleted associated items for" : "Removed labels for"} ${result.project_name || result.name || itemLabel}.`);
+      await loadSettingsEntities();
+      await loadLibraryFacets();
+      await loadLibrary();
+      const deletedCurrentProject = deleteItems && (result.project_id === projectId || (result.project_ids || []).includes(projectId));
+      if (deletedCurrentProject) {
+        projectId = null;
+        manifest = null;
+        resetReviewWorkspace();
+        $("reviewPanel").classList.add("hidden");
+        $("detailsList").innerHTML = "";
+      } else if (projectId) {
+        await refreshProjectStatus();
+        await loadDetails();
+      }
+    } catch (err) {
+      setSettingsMessage(err?.message || "Delete failed.", true);
+      btn.disabled = false;
+      btn.textContent = `Delete ${itemLabel}`;
+    }
+  });
 }
 
 async function loadLibraryFacets() {
@@ -1258,6 +1592,7 @@ async function loadLibrary() {
   div.innerHTML = "";
   if (!data.details.length) { div.textContent = "No details found yet."; return; }
   for (const d of data.details) div.appendChild(detailCard(d, false, !libraryGrid));
+  updateVisibleCompareControls();
 }
 
 async function openDetail(id) {
