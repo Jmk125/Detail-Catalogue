@@ -62,7 +62,7 @@ $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
 $("compareModeBtn").addEventListener("click", toggleCompareMode);
-$("goToLibraryCompareBtn").addEventListener("click", () => { compareMode = true; updateCompareModeButton(); showTab("libraryTab"); loadLibrary(); });
+$("goToLibraryCompareBtn").addEventListener("click", () => enableCompareMode({ switchToLibrary: true }));
 $("clearCompareBtn").addEventListener("click", clearComparison);
 $("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
@@ -477,6 +477,19 @@ function showTab(tabId) {
   }
   if (tabId === "libraryTab") { loadLibraryFacets(); loadLibrary(); }
   if (tabId === "compareTab") renderComparison();
+}
+
+function setCompareMode(enabled) {
+  compareMode = Boolean(enabled);
+  document.body.classList.toggle("compare-mode", compareMode);
+  $("libraryPanel")?.classList.toggle("compare-mode", compareMode);
+  updateCompareModeButton();
+  updateVisibleCompareControls();
+}
+
+function enableCompareMode({ switchToLibrary = false } = {}) {
+  setCompareMode(true);
+  if (switchToLibrary) showTab("libraryTab");
 }
 
 async function loadDesignTeams() {
@@ -1137,9 +1150,7 @@ function titleCase(value) {
 }
 
 function toggleCompareMode() {
-  compareMode = !compareMode;
-  updateCompareModeButton();
-  loadLibrary();
+  setCompareMode(!compareMode);
 }
 
 function updateCompareModeButton() {
@@ -1147,6 +1158,7 @@ function updateCompareModeButton() {
   if (!btn) return;
   btn.textContent = compareMode ? "Done Selecting" : "Compare Details";
   btn.classList.toggle("primary-btn", compareMode);
+  btn.setAttribute("aria-pressed", compareMode ? "true" : "false");
 }
 
 function setDetailCompared(detail, compared) {
@@ -1196,7 +1208,7 @@ function detailCard(d, compact = false, list = false, comparing = false) {
   card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "") + (compareDetailIds.has(detailId) ? " compared" : "") + (comparing ? " compare-card" : "");
   const hasNote = Boolean((d.notes || "").trim());
   const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
-  const comparePicker = (compareMode && !compact && !comparing) ? `<label class="compare-picker" title="Select detail for comparison"><input class="compare-select" type="checkbox" value="${escapeAttr(detailId)}" ${compareDetailIds.has(detailId) ? "checked" : ""} /> Compare</label>` : "";
+  const comparePicker = (!compact && !comparing) ? `<label class="compare-picker" title="Select detail for comparison"><input class="compare-select" type="checkbox" value="${escapeAttr(detailId)}" ${compareDetailIds.has(detailId) ? "checked" : ""} /> Compare</label>` : "";
   const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}${comparePicker}</div>`;
   const badge = disciplineBadge(d.discipline || "unknown");
 
@@ -1237,6 +1249,8 @@ function detailCard(d, compact = false, list = false, comparing = false) {
     showNotePopup(d);
   });
   const compareSelect = card.querySelector(".compare-select");
+  const comparePickerLabel = card.querySelector(".compare-picker");
+  if (comparePickerLabel) comparePickerLabel.addEventListener("click", (e) => e.stopPropagation());
   if (compareSelect) compareSelect.addEventListener("click", (e) => e.stopPropagation());
   if (compareSelect) compareSelect.addEventListener("change", (e) => {
     e.stopPropagation();
@@ -1370,6 +1384,7 @@ async function loadLibrary() {
   div.innerHTML = "";
   if (!data.details.length) { div.textContent = "No details found yet."; return; }
   for (const d of data.details) div.appendChild(detailCard(d, false, !libraryGrid));
+  updateVisibleCompareControls();
 }
 
 async function openDetail(id) {
