@@ -440,22 +440,16 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
-def _cv2_candidates(
+def _cv2_candidate_mask(
     cv2,
     thresh,
-    width,
-    height,
     *,
     line_kernel=45,
     text_kernel=(55, 12),
     dilate_kernel=24,
     iterations=2,
-    min_area_ratio=0.0008,
-    max_area_ratio=0.58,
-    max_aspect=12,
-    min_aspect=0.05,
 ):
-    sheet_area = width * height
+    """Build the morphology mask used by OpenCV candidate extraction."""
     kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
     kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
     horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
@@ -468,79 +462,6 @@ def _cv2_candidates(
 
     dilater = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_kernel, dilate_kernel))
     return cv2.dilate(combined, dilater, iterations=iterations)
-
-
-def _record_cv2_rejection(rejected_examples, reason, box, area_ratio, aspect):
-    rejected_examples.setdefault(reason, []).append(
-        {
-            "box": box,
-            "area_ratio": area_ratio,
-            "aspect": aspect,
-        }
-    )
-
-
-def _filter_cv2_contours(
-    cv2,
-    contours,
-    width,
-    height,
-    *,
-    min_area_ratio=0.0008,
-    max_area_ratio=0.58,
-    max_aspect=12,
-    min_aspect=0.05,
-    stats_prefix="",
-):
-    sheet_area = width * height
-    boxes = []
-    stats = {
-        f"{stats_prefix}raw_contours": len(contours),
-        f"{stats_prefix}kept": 0,
-        f"{stats_prefix}too_small": 0,
-        f"{stats_prefix}too_large": 0,
-        f"{stats_prefix}bad_aspect": 0,
-        f"{stats_prefix}title_block": 0,
-    }
-    rejected_examples = {}
-    largest_too_large_ratio = 0
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        area = w * h
-        if area < sheet_area * min_area_ratio or area > sheet_area * max_area_ratio:
-            continue
-        aspect = w / max(h, 1)
-        if aspect > max_aspect or aspect < min_aspect:
-            continue
-        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
-            stats[f"{stats_prefix}title_block"] += 1
-            _record_cv2_rejection(rejected_examples, f"{stats_prefix}title_block", box, area_ratio, aspect)
-            continue
-        stats[f"{stats_prefix}kept"] += 1
-        boxes.append(box)
-    return boxes, stats, rejected_examples, largest_too_large_ratio
-
-
-def _merge_stats(base, extra):
-    for key, value in extra.items():
-        base[key] = base.get(key, 0) + value
-
-
-def _merge_rejected_examples(base, extra):
-    for key, values in extra.items():
-        base.setdefault(key, []).extend(values)
-
-
-def _unique_boxes(boxes):
-    seen = set()
-    unique = []
-    for box in boxes:
-        key = tuple(map(int, box[:4]))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(list(key))
-    return unique
 
 
 def _cv2_candidates_detailed(
@@ -558,6 +479,8 @@ def _cv2_candidates_detailed(
     max_aspect=12,
     min_aspect=0.05,
 ):
+    """Return candidate boxes plus raw contours/rejections for diagnostics."""
+    sheet_area = width * height
     combined = _cv2_candidate_mask(
         cv2,
         thresh,
@@ -566,39 +489,43 @@ def _cv2_candidates_detailed(
         dilate_kernel=dilate_kernel,
         iterations=iterations,
     )
-    external_contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    boxes, stats, rejected_examples, largest_too_large_ratio = _filter_cv2_contours(
-        cv2,
-        external_contours,
-        width,
-        height,
-        min_area_ratio=min_area_ratio,
-        max_area_ratio=max_area_ratio,
-        max_aspect=max_aspect,
-        min_aspect=min_aspect,
-    )
+    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Some architects draw a full-sheet border or connected grid that wraps every
-    # detail. RETR_EXTERNAL then sees only one page-sized contour and hides useful
-    # internal detail contours. When that happens, inspect all contours as a fallback.
-    if len(boxes) < 3 and largest_too_large_ratio > 0.80:
-        all_contours, _ = cv2.findContours(combined, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        internal_boxes, internal_stats, internal_rejected, _ = _filter_cv2_contours(
-            cv2,
-            all_contours,
-            width,
-            height,
-            min_area_ratio=min_area_ratio,
-            max_area_ratio=max_area_ratio,
-            max_aspect=max_aspect,
-            min_aspect=min_aspect,
-            stats_prefix="internal_",
-        )
-        boxes.extend(internal_boxes)
-        _merge_stats(stats, internal_stats)
-        _merge_rejected_examples(rejected_examples, internal_rejected)
 
-    return _unique_boxes(boxes), stats, rejected_examples
+def _filter_cv2_contours(
+    cv2,
+    contours,
+    width,
+    height,
+    *,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
+    stats_prefix="",
+):
+    sheet_area = width * height
+    boxes = []
+    rejected = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        aspect = w / max(h, 1)
+        reason = None
+        if area < sheet_area * min_area_ratio:
+            reason = "too_small"
+        elif area > sheet_area * max_area_ratio:
+            reason = "too_large"
+        elif aspect > max_aspect or aspect < min_aspect:
+            reason = "bad_aspect"
+        elif x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
+            reason = "title_block"
+
+        if reason:
+            rejected.append({"reason": reason, "box": [x, y, w, h], "area": area, "aspect": aspect})
+            continue
+        boxes.append([x, y, w, h])
+    return boxes, contours, rejected
 
 
 def _cv2_candidates(
