@@ -440,20 +440,20 @@ function renderBackgroundBar(status, localUploading = 0, localProcessing = 0) {
   if (activeAi) aiParts.push(`${activeAi} pending/running`);
   $("backgroundBarTextAi").textContent = aiParts.join(" • ") || "idle";
 
-  const completedPages = (pages.ready || 0) + (pages.approved || 0) + (pages.skipped || 0) + (pages.failed || 0);
-  const totalPages = completedPages + activePages;
   const completedAi = ai.complete || 0;
   const totalAi = completedAi + activeAi + (ai.failed || 0);
-  const uploadDone = uploadEntries.filter(e => e.status === "done" || e.status === "processing").length;
-  const uploadTotal = uploadEntries.length;
 
-  const pagesDone = completedPages + uploadDone;
-  const pagesTotal = totalPages + uploadTotal;
+  const localPagesTotal = manifest?.pages?.length || 0;
+  const localPagesDone = manifest?.pages?.filter(p => p.status && p.status !== "pending" && p.status !== "processing").length || 0;
+  const pagesTotal = localPagesTotal + uploadEntries.length;
+  const pagesDone = localPagesDone + uploadEntries.filter(e => e.status === "done" || e.status === "processing").length;
   const pagesPct = pagesTotal ? Math.max(4, Math.min(100, Math.round((pagesDone / pagesTotal) * 100))) : 12;
   $("backgroundBarFillPages").style.width = `${pagesPct}%`;
+  $("backgroundBarFillPages").classList.toggle("indeterminate", pagesTotal === 0 && activePages > 0);
 
   const aiPct = totalAi ? Math.max(4, Math.min(100, Math.round((completedAi / totalAi) * 100))) : 12;
   $("backgroundBarFillAi").style.width = `${aiPct}%`;
+  $("backgroundBarFillAi").classList.toggle("indeterminate", totalAi === 0 && activeAi > 0);
 }
 
 function debounce(fn, delay) {

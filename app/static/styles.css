@@ -1260,3 +1260,14 @@ main {
   background: linear-gradient(90deg, #60a5fa, #22c55e);
   transition: width .25s ease;
 }
+
+.background-progress-fill.indeterminate {
+  width: 40% !important;
+  transition: none;
+  animation: indeterminate-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminate-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
