@@ -14,6 +14,9 @@ let drawState = null;
 let deletedBoxPatterns = [];
 let sheetBox = null;
 let sheetDragState = null;
+let compareMode = false;
+const compareDetailIds = new Set();
+const compareDetails = new Map();
 
 const $ = (id) => document.getElementById(id);
 
@@ -58,6 +61,9 @@ $("approveBtn").addEventListener("click", approveSheet);
 $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
+$("compareModeBtn").addEventListener("click", toggleCompareMode);
+$("goToLibraryCompareBtn").addEventListener("click", () => { compareMode = true; updateCompareModeButton(); showTab("libraryTab"); loadLibrary(); });
+$("clearCompareBtn").addEventListener("click", clearComparison);
 $("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
 $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
@@ -470,6 +476,7 @@ function showTab(tabId) {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
   }
   if (tabId === "libraryTab") { loadLibraryFacets(); loadLibrary(); }
+  if (tabId === "compareTab") renderComparison();
 }
 
 async function loadDesignTeams() {
@@ -1087,12 +1094,111 @@ async function loadDetails() {
   for (const d of pageDetails) div.appendChild(detailCard(d, true));
 }
 
-function detailCard(d, compact = false, list = false) {
+
+function disciplineLabel(discipline) {
+  const normalized = normalizeDiscipline(discipline);
+  const labels = {
+    architectural: "Architectural",
+    structural: "Structural",
+    civil: "Civil",
+    mechanical: "Mechanical/HVAC",
+    electrical: "Electrical",
+    plumbing: "Plumbing",
+    "fire protection": "Fire Suppression",
+    "technology/security": "Technology",
+    unknown: "Unknown",
+  };
+  return labels[normalized] || titleCase(discipline || "unknown");
+}
+
+function normalizeDiscipline(discipline) {
+  const value = String(discipline || "unknown").trim().toLowerCase();
+  if (value.includes("civil")) return "civil";
+  if (value.includes("struct")) return "structural";
+  if (value.includes("arch")) return "architectural";
+  if (value.includes("mech") || value.includes("hvac")) return "mechanical";
+  if (value.includes("plumb")) return "plumbing";
+  if (value.includes("elect")) return "electrical";
+  if (value.includes("tech") || value.includes("security")) return "technology/security";
+  if (value.includes("fire")) return "fire protection";
+  return value || "unknown";
+}
+
+function disciplineClass(discipline) {
+  return `discipline-${normalizeDiscipline(discipline).replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function disciplineBadge(discipline) {
+  return `<span class="discipline-badge ${disciplineClass(discipline)}">${escapeHtml(disciplineLabel(discipline))}</span>`;
+}
+
+function titleCase(value) {
+  return String(value || "").replace(/[-_/]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function toggleCompareMode() {
+  compareMode = !compareMode;
+  updateCompareModeButton();
+  loadLibrary();
+}
+
+function updateCompareModeButton() {
+  const btn = $("compareModeBtn");
+  if (!btn) return;
+  btn.textContent = compareMode ? "Done Selecting" : "Compare Details";
+  btn.classList.toggle("primary-btn", compareMode);
+}
+
+function setDetailCompared(detail, compared) {
+  const detailId = String(detail.id);
+  if (compared) {
+    compareDetailIds.add(detailId);
+    compareDetails.set(detailId, detail);
+  } else {
+    compareDetailIds.delete(detailId);
+    compareDetails.delete(detailId);
+  }
+  renderComparison();
+  updateVisibleCompareControls();
+}
+
+function updateVisibleCompareControls() {
+  document.querySelectorAll(".compare-select").forEach(input => {
+    input.checked = compareDetailIds.has(input.value);
+  });
+}
+
+function clearComparison() {
+  compareDetailIds.clear();
+  compareDetails.clear();
+  updateVisibleCompareControls();
+  renderComparison();
+  loadLibrary();
+}
+
+function renderComparison() {
+  const results = $("compareResults");
+  if (!results) return;
+  const details = Array.from(compareDetailIds).map(id => compareDetails.get(id)).filter(Boolean);
+  const summary = $("compareSummary");
+  if (summary) summary.textContent = details.length ? `${details.length} detail${details.length === 1 ? "" : "s"} selected for comparison.` : "Select details from the library to compare them side by side.";
+  results.innerHTML = "";
+  if (!details.length) {
+    results.innerHTML = `<div class="empty-compare"><strong>No details selected yet.</strong><br>Use the Detail Library’s Compare Details button to turn on card checkboxes, then select details to compare.</div>`;
+    return;
+  }
+  for (const d of details) results.appendChild(detailCard(d, false, false, true));
+}
+
+function detailCard(d, compact = false, list = false, comparing = false) {
   const card = document.createElement("div");
-  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "");
+  const detailId = String(d.id);
+  card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "") + (compareDetailIds.has(detailId) ? " compared" : "") + (comparing ? " compare-card" : "");
   const hasNote = Boolean((d.notes || "").trim());
   const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
-  const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}</div>`;
+  const comparePicker = (compareMode && !compact && !comparing) ? `<label class="compare-picker" title="Select detail for comparison"><input class="compare-select" type="checkbox" value="${escapeAttr(detailId)}" ${compareDetailIds.has(detailId) ? "checked" : ""} /> Compare</label>` : "";
+  const thumb = `<div class="card-thumb-wrap"><img src="/data/projects/${d.project_id}/${d.thumbnail || d.crop_image}" alt="Detail thumbnail" /><button class="bookmark-badge" type="button" aria-label="Toggle bookmark">${d.bookmarked ? "★" : "☆"}</button>${noteBadge}${comparePicker}</div>`;
+  const badge = disciplineBadge(d.discipline || "unknown");
 
   if (list) {
     const tags = (d.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(" ");
@@ -1104,7 +1210,7 @@ function detailCard(d, compact = false, list = false) {
       <div class="list-card-info">
         <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong>
         <small>${escapeHtml(d.project_name || "Unnamed project")}${d.design_team ? ` — ${escapeHtml(d.design_team)}` : ""}</small>
-        <small>${escapeHtml(d.discipline || "unknown")}${numbers ? ` · ${escapeHtml(numbers)}` : ""}</small>
+        <div class="card-meta-row">${badge}${numbers ? `<small>${escapeHtml(numbers)}</small>` : ""}</div>
         ${summary ? `<p class="list-summary">${escapeHtml(summary)}</p>` : ""}
         ${tags ? `<div class="list-tags">${tags}</div>` : ""}
         <div class="list-meta">
@@ -1118,7 +1224,7 @@ function detailCard(d, compact = false, list = false) {
       ${thumb}
       <strong>${escapeHtml(d.detail_title || "Untitled detail")}</strong><br>
       <small>${escapeHtml(d.project_name || "Unnamed project")}</small><br>
-      <small>${escapeHtml(d.discipline || "unknown")}</small>
+      <div class="card-meta-row">${badge}</div>
     `;
   }
   card.querySelector(".bookmark-badge").addEventListener("click", async (e) => {
@@ -1129,6 +1235,13 @@ function detailCard(d, compact = false, list = false) {
   if (noteBtn) noteBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     showNotePopup(d);
+  });
+  const compareSelect = card.querySelector(".compare-select");
+  if (compareSelect) compareSelect.addEventListener("click", (e) => e.stopPropagation());
+  if (compareSelect) compareSelect.addEventListener("change", (e) => {
+    e.stopPropagation();
+    setDetailCompared(d, compareSelect.checked);
+    card.classList.toggle("compared", compareSelect.checked);
   });
   card.addEventListener("click", () => openDetail(d.id));
   return card;
