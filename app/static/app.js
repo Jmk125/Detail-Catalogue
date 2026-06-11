@@ -1275,11 +1275,42 @@ function showNotePopup(d) {
 }
 
 let scanPollTimer = null;
+let highlightedScanDetailIds = new Set();
 
 function setScanStatus(text) {
   const span = $("scanStatus");
   span.textContent = text || "";
   span.classList.toggle("hidden", !text);
+}
+
+function scanDetailLabel(detail) {
+  if (!detail) return "detail";
+  const title = detail.detail_title || "Untitled detail";
+  const sheet = detail.sheet_number ? `sheet ${detail.sheet_number}` : (detail.page_number ? `page ${detail.page_number}` : "");
+  return [title, sheet].filter(Boolean).join(" on ");
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function updateScanHighlights(status = {}) {
+  highlightedScanDetailIds = new Set((status.running_detail_ids || []).map(String));
+  document.querySelectorAll(".detail-card.scan-running").forEach(card => {
+    if (!highlightedScanDetailIds.has(card.dataset.detailId)) card.classList.remove("scan-running");
+  });
+  for (const id of highlightedScanDetailIds) {
+    document.querySelectorAll(`.detail-card[data-detail-id="${cssEscape(id)}"]`).forEach(card => card.classList.add("scan-running"));
+  }
+}
+
+function scanStatusMessage(status) {
+  const running = status.running_details || [];
+  const active = status.active || 0;
+  if (running.length === 1) return `AI scanning ${scanDetailLabel(running[0])} (${active} job${active === 1 ? "" : "s"} remaining)...`;
+  if (running.length > 1) return `AI scanning ${running.length} details (${active} job${active === 1 ? "" : "s"} remaining)...`;
+  return `AI scanning in background: ${active} job${active === 1 ? "" : "s"} remaining...`;
 }
 
 async function scanUnscannedDetails() {
@@ -1294,6 +1325,7 @@ async function scanUnscannedDetails() {
       setTimeout(() => { if (!scanPollTimer) setScanStatus(""); }, 5000);
       return;
     }
+    updateScanHighlights(data.status);
     setScanStatus(`Queued ${data.queued} detail(s). AI scanning is running in the background...`);
     startScanPolling();
   } finally {
@@ -1307,9 +1339,11 @@ function startScanPolling() {
     const res = await fetch("/api/library/scan-status");
     if (!res.ok) return;
     const s = await res.json();
+    updateScanHighlights(s);
     if (s.active > 0) {
-      setScanStatus(`AI scanning in background: ${s.active} job(s) remaining...`);
+      setScanStatus(scanStatusMessage(s));
     } else {
+      updateScanHighlights({ running_detail_ids: [] });
       clearInterval(scanPollTimer);
       scanPollTimer = null;
       setScanStatus("Background AI scan finished. Library refreshed.");

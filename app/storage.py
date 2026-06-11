@@ -547,11 +547,29 @@ def ai_scan_status() -> dict[str, Any]:
     with connect() as conn:
         detail_counts = {r["ai_status"]: r["c"] for r in conn.execute("SELECT ai_status, COUNT(*) AS c FROM details GROUP BY ai_status")}
         job_counts = {r["status"]: r["c"] for r in conn.execute("SELECT status, COUNT(*) AS c FROM ai_jobs GROUP BY status")}
+        running_details = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT details.id, details.detail_title, details.detail_number, details.sheet_number,
+                       projects.project_name, source_files.filename AS source_filename, pages.page_number
+                FROM ai_jobs
+                JOIN details ON details.id = ai_jobs.detail_id
+                JOIN projects ON projects.id = details.project_id
+                JOIN source_files ON source_files.id = details.source_file_id
+                JOIN pages ON pages.id = details.page_id
+                WHERE ai_jobs.status='running'
+                ORDER BY ai_jobs.started_at, ai_jobs.created_at
+                """
+            )
+        ]
     return {
         "details": detail_counts,
         "jobs": job_counts,
         "unscanned": sum(c for status, c in detail_counts.items() if status != "complete"),
         "active": job_counts.get("pending", 0) + job_counts.get("running", 0),
+        "running_detail_ids": [d["id"] for d in running_details],
+        "running_details": running_details,
     }
 
 
