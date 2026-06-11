@@ -1367,6 +1367,16 @@ main {
   font-weight: 800;
   cursor: pointer;
   z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity .12s ease, transform .12s ease;
+}
+
+.compare-mode .compare-picker {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .compare-picker input {
