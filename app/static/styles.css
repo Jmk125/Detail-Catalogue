@@ -1207,9 +1207,9 @@ main {
   bottom: 16px;
   z-index: 60;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  max-width: min(520px, calc(100vw - 32px));
+  flex-wrap: nowrap;
+  gap: 16px;
+  max-width: min(640px, calc(100vw - 32px));
   padding: 8px 12px;
   border: 1px solid rgba(37, 99, 235, .35);
   border-radius: 12px;
@@ -1227,8 +1227,8 @@ main {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1 1 200px;
-  min-width: 160px;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .background-bar-label {
