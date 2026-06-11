@@ -69,6 +69,12 @@ $("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid;
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
 $("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
 $("noteModal").addEventListener("click", (e) => { if (e.target === $("noteModal")) $("noteModal").classList.add("hidden"); });
+$("settingsBtn").addEventListener("click", openSettings);
+$("closeSettingsBtn").addEventListener("click", closeSettings);
+$("settingsModal").addEventListener("click", (e) => { if (e.target === $("settingsModal")) closeSettings(); });
+for (const btn of document.querySelectorAll(".settings-tab")) {
+  btn.addEventListener("click", () => showSettingsPanel(btn.dataset.settingsPanel));
+}
 for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
@@ -1368,6 +1374,167 @@ async function toggleBookmark(detail) {
 
 function selectedCheckboxValues(containerId) {
   return Array.from($(containerId).querySelectorAll("input[type=checkbox]:checked")).map(input => input.value);
+}
+
+async function openSettings() {
+  $("settingsModal").classList.remove("hidden");
+  setSettingsMessage("");
+  await loadSettingsEntities();
+}
+
+function closeSettings() {
+  $("settingsModal").classList.add("hidden");
+}
+
+function showSettingsPanel(panelId) {
+  for (const panel of document.querySelectorAll(".settings-panel")) {
+    panel.classList.toggle("hidden", panel.id !== panelId);
+    panel.classList.toggle("active", panel.id === panelId);
+  }
+  for (const btn of document.querySelectorAll(".settings-tab")) {
+    btn.classList.toggle("active", btn.dataset.settingsPanel === panelId);
+  }
+}
+
+function setSettingsMessage(message, isError = false) {
+  const el = $("settingsMessage");
+  el.textContent = message || "";
+  el.classList.toggle("hidden", !message);
+  el.classList.toggle("error", Boolean(isError));
+}
+
+async function loadSettingsEntities() {
+  const res = await fetch("/api/manage/entities");
+  if (!res.ok) {
+    setSettingsMessage(await res.text(), true);
+    return;
+  }
+  const data = await res.json();
+  renderSettingsProjects(data.projects || []);
+  renderSettingsFirms(data.design_teams || []);
+}
+
+function renderSettingsProjects(projects) {
+  const container = $("settingsProjectsList");
+  container.innerHTML = "";
+  if (!projects.length) {
+    container.innerHTML = `<div class="settings-empty">No projects have been created yet.</div>`;
+    return;
+  }
+  for (const project of projects) {
+    const name = project.project_name || "";
+    const displayName = name || "(blank project name)";
+    const item = document.createElement("article");
+    item.className = "settings-entity";
+    item.innerHTML = `
+      <div class="settings-entity-title">
+        <div>
+          <strong>${escapeHtml(displayName)}</strong>
+          <small>Architect / design firm: ${escapeHtml(project.design_team || "None")}</small>
+        </div>
+        <span class="settings-entity-meta">${Number(project.detail_count || 0)} details • ${Number(project.source_count || 0)} source PDFs</span>
+      </div>
+      ${settingsDeleteForm("project", project.id, name, displayName)}
+    `;
+    wireSettingsDeleteForm(item, "project", project.id, name);
+    container.appendChild(item);
+  }
+}
+
+function renderSettingsFirms(firms) {
+  const container = $("settingsFirmsList");
+  container.innerHTML = "";
+  if (!firms.length) {
+    container.innerHTML = `<div class="settings-empty">No design firms have been saved yet.</div>`;
+    return;
+  }
+  for (const firm of firms) {
+    const name = firm.name || "";
+    const primaryCount = Number(firm.primary_project_count || 0);
+    const designerCount = Number(firm.designer_project_count || 0);
+    const item = document.createElement("article");
+    item.className = "settings-entity";
+    item.innerHTML = `
+      <div class="settings-entity-title">
+        <div>
+          <strong>${escapeHtml(name)}</strong>
+          <small>${primaryCount} primary projects • ${designerCount} engineer listings</small>
+        </div>
+        <span class="settings-entity-meta">${Number(firm.detail_count || 0)} associated details</span>
+      </div>
+      ${settingsDeleteForm("firm", firm.id, name, name)}
+    `;
+    wireSettingsDeleteForm(item, "firm", firm.id, name);
+    container.appendChild(item);
+  }
+}
+
+function settingsDeleteForm(type, id, confirmName, displayName) {
+  const itemLabel = type === "project" ? "project" : "design firm";
+  const associationLabel = type === "project" ? "all pages, crops, details, and source files in this project" : "all projects, source files, crops, and details associated with this firm";
+  const metadataLabel = type === "project" ? "only the project name, primary firm, and engineer firm labels; keep this project's details" : "only this firm's name/labels; keep associated project details";
+  return `
+    <div class="settings-delete-form" data-type="${escapeAttr(type)}" data-id="${escapeAttr(id)}" data-confirm-name="${escapeAttr(confirmName)}">
+      <div class="settings-delete-options" role="radiogroup" aria-label="Delete mode for ${escapeAttr(displayName)}">
+        <label><input type="radio" name="deleteMode_${escapeAttr(type)}_${escapeAttr(id)}" value="metadata" checked /> Delete ${metadataLabel}.</label>
+        <label><input type="radio" name="deleteMode_${escapeAttr(type)}_${escapeAttr(id)}" value="items" /> Delete ${associationLabel}.</label>
+      </div>
+      <div class="settings-confirm-row">
+        <label>Type <code>${escapeHtml(confirmName || "(blank)")}</code> to confirm
+          <input type="text" class="settings-confirm-input" autocomplete="off" ${confirmName ? "" : "placeholder=\"Leave blank to confirm blank name\""} />
+        </label>
+        <button type="button" class="danger-btn settings-delete-btn" disabled>Delete ${escapeHtml(itemLabel)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireSettingsDeleteForm(item, type, id, confirmName) {
+  const input = item.querySelector(".settings-confirm-input");
+  const btn = item.querySelector(".settings-delete-btn");
+  const update = () => { btn.disabled = input.value.trim() !== confirmName.trim(); };
+  input.addEventListener("input", update);
+  update();
+  btn.addEventListener("click", async () => {
+    const mode = item.querySelector("input[type=radio]:checked")?.value || "metadata";
+    const deleteItems = mode === "items";
+    const itemLabel = type === "project" ? "project" : "design firm";
+    const warning = deleteItems
+      ? `This will permanently delete the ${itemLabel} and all associated items. Continue?`
+      : `This will delete only the ${itemLabel} name/firm labels and keep associated details. Continue?`;
+    if (!confirm(warning)) return;
+    btn.disabled = true;
+    btn.textContent = "Deleting...";
+    try {
+      const endpoint = type === "project" ? `/api/manage/projects/${id}` : `/api/manage/design-teams/${id}`;
+      const res = await fetch(endpoint, {
+        method: "DELETE",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ delete_items: deleteItems, confirm_name: input.value.trim() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const result = await res.json();
+      setSettingsMessage(`${deleteItems ? "Deleted associated items for" : "Removed labels for"} ${result.project_name || result.name || itemLabel}.`);
+      await loadSettingsEntities();
+      await loadLibraryFacets();
+      await loadLibrary();
+      const deletedCurrentProject = deleteItems && (result.project_id === projectId || (result.project_ids || []).includes(projectId));
+      if (deletedCurrentProject) {
+        projectId = null;
+        manifest = null;
+        resetReviewWorkspace();
+        $("reviewPanel").classList.add("hidden");
+        $("detailsList").innerHTML = "";
+      } else if (projectId) {
+        await refreshProjectStatus();
+        await loadDetails();
+      }
+    } catch (err) {
+      setSettingsMessage(err?.message || "Delete failed.", true);
+      btn.disabled = false;
+      btn.textContent = `Delete ${itemLabel}`;
+    }
+  });
 }
 
 async function loadLibraryFacets() {

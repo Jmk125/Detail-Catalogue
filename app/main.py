@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,13 +21,16 @@ from .storage import (
     ai_scan_status,
     background_activity_status,
     create_project_record,
+    delete_design_team_record,
     delete_detail,
+    delete_project_record,
     get_detail,
     get_next_ready_page,
     get_project_manifest,
     get_project_status,
     list_design_teams,
     list_details,
+    list_settings_entities,
     list_library_facets,
     make_project_zip,
     process_all_pending_ai_jobs,
@@ -248,6 +251,41 @@ def library_search(
 @app.get("/api/library/facets")
 def library_facets():
     return list_library_facets()
+
+
+@app.get("/api/manage/entities")
+def manage_entities():
+    return list_settings_entities()
+
+
+@app.delete("/api/manage/projects/{project_id}")
+def delete_project_manage(project_id: str, payload: dict = Body(...)):
+    try:
+        result = delete_project_record(
+            project_id,
+            delete_items=bool(payload.get("delete_items")),
+            confirm_name=str(payload.get("confirm_name") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return result
+
+
+@app.delete("/api/manage/design-teams/{design_team_id}")
+def delete_design_team_manage(design_team_id: int, payload: dict = Body(...)):
+    try:
+        result = delete_design_team_record(
+            design_team_id,
+            delete_items=bool(payload.get("delete_items")),
+            confirm_name=str(payload.get("confirm_name") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result:
+        raise HTTPException(status_code=404, detail="Design firm not found.")
+    return result
 
 
 @app.post("/api/library/scan-unscanned")
