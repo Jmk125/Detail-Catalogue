@@ -13,6 +13,7 @@
     </div>
     <nav class="tabs" aria-label="Primary">
       <button id="libraryTabBtn" class="tab-btn active" data-tab="libraryTab">Detail Library</button>
+      <button id="compareTabBtn" class="tab-btn" data-tab="compareTab">Compare Details</button>
       <button id="processTabBtn" class="tab-btn" data-tab="processTab">Process Drawings</button>
     </nav>
   </header>
@@ -118,6 +119,7 @@
           <span id="scanStatus" class="scan-status hidden"></span>
         </div>
         <div class="buttons">
+          <button id="compareModeBtn">Compare Details</button>
           <button id="scanUnscannedBtn">Scan Untagged Details</button>
           <button id="gridToggleBtn">Grid/List</button>
           <button id="refreshLibraryBtn">Refresh Library</button>
@@ -143,6 +145,22 @@
       </div>
       <div id="libraryResults" class="library-grid"></div>
     </section>
+    </div>
+
+    <div id="compareTab" class="tab-panel hidden">
+      <section id="comparePanel" class="panel compare-panel">
+        <div class="toolbar">
+          <div>
+            <h2>Detail Comparison</h2>
+            <span id="compareSummary">Select details from the library to compare them side by side.</span>
+          </div>
+          <div class="buttons">
+            <button id="goToLibraryCompareBtn">Choose Details</button>
+            <button id="clearCompareBtn" class="danger-btn">Clear Compared Details</button>
+          </div>
+        </div>
+        <div id="compareResults" class="compare-grid"></div>
+      </section>
     </div>
   </main>
 
