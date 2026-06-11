@@ -11,10 +11,14 @@
       <h1>Detail Catalogue</h1>
       <p>Upload drawings, review crop boxes, approve details, and build a searchable detail library.</p>
     </div>
-    <nav class="tabs" aria-label="Primary">
-      <button id="libraryTabBtn" class="tab-btn active" data-tab="libraryTab">Detail Library</button>
-      <button id="processTabBtn" class="tab-btn" data-tab="processTab">Process Drawings</button>
-    </nav>
+    <div class="header-actions">
+      <nav class="tabs" aria-label="Primary">
+        <button id="libraryTabBtn" class="tab-btn active" data-tab="libraryTab">Detail Library</button>
+        <button id="compareTabBtn" class="tab-btn" data-tab="compareTab">Compare Details</button>
+        <button id="processTabBtn" class="tab-btn" data-tab="processTab">Process Drawings</button>
+      </nav>
+      <button id="settingsBtn" class="settings-btn" type="button" aria-label="Open settings menu" title="Settings">⚙</button>
+    </div>
   </header>
 
   <main>
@@ -118,6 +122,7 @@
           <span id="scanStatus" class="scan-status hidden"></span>
         </div>
         <div class="buttons">
+          <button id="compareModeBtn">Compare Details</button>
           <button id="scanUnscannedBtn">Scan Untagged Details</button>
           <button id="gridToggleBtn">Grid/List</button>
           <button id="refreshLibraryBtn">Refresh Library</button>
@@ -144,6 +149,22 @@
       <div id="libraryResults" class="library-grid"></div>
     </section>
     </div>
+
+    <div id="compareTab" class="tab-panel hidden">
+      <section id="comparePanel" class="panel compare-panel">
+        <div class="toolbar">
+          <div>
+            <h2>Detail Comparison</h2>
+            <span id="compareSummary">Select details from the library to compare them side by side.</span>
+          </div>
+          <div class="buttons">
+            <button id="goToLibraryCompareBtn">Choose Details</button>
+            <button id="clearCompareBtn" class="danger-btn">Clear Compared Details</button>
+          </div>
+        </div>
+        <div id="compareResults" class="compare-grid"></div>
+      </section>
+    </div>
   </main>
 
   <div id="detailModal" class="modal hidden">
@@ -166,6 +187,36 @@
       <div class="note-card-body">
         <p id="noteModalBody"></p>
       </div>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card settings-card">
+      <button id="closeSettingsBtn" class="modal-close">×</button>
+      <div class="settings-header">
+        <span class="settings-icon">⚙</span>
+        <div>
+          <h2>Settings</h2>
+          <p class="hint">Manage projects and design firms. Deletions require typing the exact name as confirmation.</p>
+        </div>
+      </div>
+
+      <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button id="settingsProjectsTab" class="settings-tab active" type="button" data-settings-panel="settingsProjectsPanel">Projects</button>
+        <button id="settingsFirmsTab" class="settings-tab" type="button" data-settings-panel="settingsFirmsPanel">Design Firms</button>
+      </div>
+
+      <div id="settingsMessage" class="settings-message hidden" role="status"></div>
+
+      <section id="settingsProjectsPanel" class="settings-panel active">
+        <h3>Delete a Project</h3>
+        <div id="settingsProjectsList" class="settings-entity-list"></div>
+      </section>
+
+      <section id="settingsFirmsPanel" class="settings-panel hidden">
+        <h3>Delete a Design Firm</h3>
+        <div id="settingsFirmsList" class="settings-entity-list"></div>
+      </section>
     </div>
   </div>
 
