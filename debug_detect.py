@@ -10,6 +10,9 @@ import cv2
 
 from app.detector import (
     _cv2_candidates,
+    _cv2_detection_profiles,
+    _cv2_preview_boxes,
+    _estimate_packed_layout,
     _merge_boxes,
     _merge_labels_under_details,
     _dedupe_boxes,
@@ -33,39 +36,15 @@ def main(image_path: str) -> None:
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    profiles = (
-        ("coarse", {
-            "line_kernel": 45,
-            "text_kernel": (55, 12),
-            "dilate_kernel": 24,
-            "iterations": 2,
-            "min_area_ratio": 0.0008,
-            "max_area_ratio": 0.58,
-            "merge_dx": 14,
-            "merge_dy": 14,
-        }),
-        ("fine", {
-            "line_kernel": 25,
-            "text_kernel": (35, 8),
-            "dilate_kernel": 10,
-            "iterations": 1,
-            "min_area_ratio": 0.00055,
-            "max_area_ratio": 0.40,
-            "merge_dx": 5,
-            "merge_dy": 5,
-        }),
-        ("loose", {
-            "line_kernel": 17,
-            "text_kernel": (24, 6),
-            "dilate_kernel": 7,
-            "iterations": 1,
-            "min_area_ratio": 0.00025,
-            "max_area_ratio": 0.22,
-            "max_aspect": 16,
-            "merge_dx": max(4, int(width * 0.010)),
-            "merge_dy": max(4, int(height * 0.014)),
-        }),
+    preview_boxes = _cv2_preview_boxes(cv2, thresh, width, height)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height)
+    mode = "packed" if packed_layout else "loose"
+    profiles = tuple(
+        (f"{mode}_{idx}", profile)
+        for idx, profile in enumerate(_cv2_detection_profiles(width, height, packed_layout), start=1)
     )
+    print(f"Preview candidates: {len(preview_boxes)}")
+    print(f"Packed layout: {packed_layout}")
 
     boxes = []
     for name, profile in profiles:
@@ -74,13 +53,13 @@ def main(image_path: str) -> None:
         merge_dy = candidate_profile.pop("merge_dy")
         candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
         merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
-        print(f"{name.title()} candidates: {len(candidates)}")
+        print(f"{name.title()} profile candidates: {len(candidates)}")
         print(f"After merge - {name}: {len(merged)}")
         for b in merged:
             area_pct = (b[2] * b[3]) / sheet_area * 100
             print(f"  {name:<6} box {b}  area%={area_pct:.1f}")
         boxes.extend(merged)
-    boxes = _merge_labels_under_details(boxes, width, height)
+    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
     print(f"After label-merge: {len(boxes)}")
 
     boxes = _dedupe_boxes(boxes)
