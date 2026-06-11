@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -9,6 +10,8 @@ from .detector import detect_candidate_detail_boxes
 from .pdf_tools import render_pdf_page
 from .settings import get_settings
 from .storage import process_all_pending_ai_jobs, project_dir, update_page_failed, update_page_ready
+
+logger = logging.getLogger(__name__)
 
 _PROCESSOR = ThreadPoolExecutor(max_workers=int(os.getenv("DETAIL_PROCESSING_WORKERS", "1")))
 
@@ -57,6 +60,7 @@ def process_project_pages(project_id: str) -> None:
             boxes = detect_candidate_detail_boxes(pdir / image_rel)
             update_page_ready(page["id"], image_rel, info, boxes)
         except Exception as exc:  # durable per-page failure lets rest of batch continue
+            logger.exception("Failed to process project %s page %s", project_id, page["id"])
             update_page_failed(page["id"], str(exc))
     with connect() as conn:
         remaining = conn.execute(
