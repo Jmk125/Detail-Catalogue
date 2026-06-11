@@ -1246,7 +1246,8 @@ main {
 }
 
 .background-progress {
-  flex: 1 1 auto;
+  flex: 1 1 60px;
+  min-width: 60px;
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
