@@ -142,15 +142,8 @@ def _median(values):
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
-def _estimate_packed_layout(boxes, width, height):
-    """Return True when a sheet has many closely-spaced detail clusters.
-
-    The detector has two competing goals: loose sheets need generous grouping and
-    label reach, while packed sheets need small kernels/gaps so adjacent details do
-    not collapse into large groups. This lightweight pre-pass looks only at small
-    preview clusters and chooses the safer packed settings when the page has many
-    candidates spread across a grid with short nearest-neighbor distances.
-    """
+def _packed_layout_metrics(boxes, width, height, raw_count=None):
+    """Summarize whether preview candidates look like a packed detail grid."""
     sheet_area = max(1, width * height)
     preview = []
     for x, y, w, h in [list(map(int, b[:4])) for b in boxes]:
@@ -164,9 +157,6 @@ def _estimate_packed_layout(boxes, width, height):
         if x > width * 0.78 and area > sheet_area * 0.012:
             continue
         preview.append([x, y, w, h])
-
-    if len(preview) < 10:
-        return False
 
     centers = [(x + w / 2, y + h / 2) for x, y, w, h in preview]
     nearest = []
@@ -187,14 +177,45 @@ def _estimate_packed_layout(boxes, width, height):
     median_nearest = _median(nearest)
     area_ratios = [(w * h) / sheet_area for _, _, w, h in preview]
     median_area = _median(area_ratios)
+    raw_count = len(boxes) if raw_count is None else raw_count
+
+    enough_preview = len(preview) >= 10
+    small_enough_to_split = median_area <= 0.04
     broad_grid = len(occupied) >= 14
     very_many_close_clusters = len(preview) >= 24 and len(occupied) >= 10 and median_nearest <= 0.12
-    small_enough_to_split = median_area <= 0.04
-    return small_enough_to_split and (broad_grid or very_many_close_clusters)
+    many_raw_clusters = raw_count >= 45 and len(preview) >= 16 and len(occupied) >= 8
+    packed_layout = enough_preview and small_enough_to_split and (
+        broad_grid or very_many_close_clusters or many_raw_clusters
+    )
+
+    return {
+        "raw_count": raw_count,
+        "preview_count": len(preview),
+        "occupied_cells": len(occupied),
+        "median_nearest": median_nearest,
+        "median_area": median_area,
+        "broad_grid": broad_grid,
+        "very_many_close_clusters": very_many_close_clusters,
+        "many_raw_clusters": many_raw_clusters,
+        "packed_layout": packed_layout,
+    }
 
 
-def _cv2_preview_boxes(cv2, thresh, width, height):
-    candidates = _cv2_candidates(
+def _estimate_packed_layout(boxes, width, height, raw_count=None):
+    """Return True when a sheet has many closely-spaced detail clusters.
+
+    The detector has two competing goals: loose sheets need generous grouping and
+    label reach, while packed sheets need small kernels/gaps so adjacent details do
+    not collapse into large groups. This lightweight pre-pass looks at preview
+    clusters and the raw pre-merge contour count so packed pages are still
+    recognized when the preview merge has already chained several details
+    together.
+    """
+    return _packed_layout_metrics(boxes, width, height, raw_count=raw_count)["packed_layout"]
+
+
+def _cv2_preview_candidates(cv2, thresh, width, height):
+    return _cv2_candidates(
         cv2,
         thresh,
         width,
@@ -207,7 +228,10 @@ def _cv2_preview_boxes(cv2, thresh, width, height):
         max_area_ratio=0.14,
         max_aspect=18,
     )
-    return _merge_boxes(candidates, dx=3, dy=3)
+
+
+def _cv2_preview_boxes(cv2, thresh, width, height):
+    return _merge_boxes(_cv2_preview_candidates(cv2, thresh, width, height), dx=3, dy=3)
 
 
 def _cv2_detection_profiles(width, height, packed_layout):
@@ -282,7 +306,7 @@ def _cv2_detection_profiles(width, height, packed_layout):
     )
 
 
-def _pillow_preview_boxes(mask_img, width, height, sheet_area):
+def _pillow_preview_candidates(mask_img, width, height, sheet_area):
     preview_img = mask_img.filter(ImageFilter.MaxFilter(3))
     mask = np.asarray(preview_img) > 0
     preview = []
@@ -296,7 +320,11 @@ def _pillow_preview_boxes(mask_img, width, height, sheet_area):
         if pixels < sheet_area * 0.00010:
             continue
         preview.append([x, y, w, h])
-    return _merge_boxes(preview, dx=3, dy=3)
+    return preview
+
+
+def _pillow_preview_boxes(mask_img, width, height, sheet_area):
+    return _merge_boxes(_pillow_preview_candidates(mask_img, width, height, sheet_area), dx=3, dy=3)
 
 
 def _pillow_detection_profiles(width, height, packed_layout):
@@ -412,15 +440,22 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
     ]
 
 
-def _cv2_candidate_mask(
+def _cv2_candidates(
     cv2,
     thresh,
+    width,
+    height,
     *,
     line_kernel=45,
     text_kernel=(55, 12),
     dilate_kernel=24,
     iterations=2,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
 ):
+    sheet_area = width * height
     kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
     kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
     horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
@@ -472,21 +507,10 @@ def _filter_cv2_contours(
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
         area = w * h
-        area_ratio = area / max(1, sheet_area)
+        if area < sheet_area * min_area_ratio or area > sheet_area * max_area_ratio:
+            continue
         aspect = w / max(h, 1)
-        box = [x, y, w, h]
-        if area < sheet_area * min_area_ratio:
-            stats[f"{stats_prefix}too_small"] += 1
-            _record_cv2_rejection(rejected_examples, f"{stats_prefix}too_small", box, area_ratio, aspect)
-            continue
-        if area > sheet_area * max_area_ratio:
-            stats[f"{stats_prefix}too_large"] += 1
-            largest_too_large_ratio = max(largest_too_large_ratio, area_ratio)
-            _record_cv2_rejection(rejected_examples, f"{stats_prefix}too_large", box, area_ratio, aspect)
-            continue
         if aspect > max_aspect or aspect < min_aspect:
-            stats[f"{stats_prefix}bad_aspect"] += 1
-            _record_cv2_rejection(rejected_examples, f"{stats_prefix}bad_aspect", box, area_ratio, aspect)
             continue
         if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
             stats[f"{stats_prefix}title_block"] += 1
@@ -632,8 +656,9 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    preview_boxes = _cv2_preview_boxes(cv2, thresh, width, height)
-    packed_layout = _estimate_packed_layout(preview_boxes, width, height)
+    preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
 
     # Multi-scale detection adapts to sheet density. Packed sheets use tighter
     # kernels/gaps and shorter label reach so adjacent details do not collapse
@@ -717,8 +742,9 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
     dilate = max(7, int(round(min(width, height) * 0.012)))
     if dilate % 2 == 0:
         dilate += 1
-    preview_boxes = _pillow_preview_boxes(mask_img, width, height, sheet_area)
-    packed_layout = _estimate_packed_layout(preview_boxes, width, height)
+    preview_candidates = _pillow_preview_candidates(mask_img, width, height, sheet_area)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
 
     boxes = []
     profiles = _pillow_detection_profiles(width, height, packed_layout)
