@@ -14,9 +14,7 @@ from pathlib import Path
 import cv2
 
 from app.detector import (
-    _cv2_candidates,
     _cv2_detection_profiles,
-    _cv2_preview_boxes,
     _estimate_packed_layout,
     _merge_boxes,
     _merge_labels_under_details,
@@ -61,6 +59,121 @@ def _draw_overlay(image_path: str, results: list[dict], output_path: Path) -> No
     print(f"Overlay written: {output_path}")
 
 
+def _record_rejection(
+    examples: dict[str, list[dict]],
+    reason: str,
+    box: list[int],
+    area_ratio: float,
+    aspect: float,
+) -> None:
+    examples.setdefault(reason, []).append(
+        {
+            "box": box,
+            "area_ratio": area_ratio,
+            "aspect": aspect,
+        }
+    )
+
+
+def _print_candidate_diagnostics(
+    label: str,
+    stats: dict[str, int],
+    rejected_examples: dict[str, list[dict]],
+    scale: float,
+) -> None:
+    rejected_parts = [
+        f"{key}={stats.get(key, 0)}"
+        for key in ("too_small", "too_large", "bad_aspect", "title_block")
+        if stats.get(key, 0)
+    ]
+    suffix = f"; rejected {'; '.join(rejected_parts)}" if rejected_parts else ""
+    print(
+        f"{label} raw contours: {stats.get('raw_contours', 0)}; "
+        f"kept: {stats.get('kept', 0)}{suffix}"
+    )
+
+    for reason in ("too_small", "too_large", "bad_aspect", "title_block"):
+        examples = sorted(
+            rejected_examples.get(reason, []),
+            key=lambda item: item["area_ratio"],
+            reverse=True,
+        )[:3]
+        for item in examples:
+            box = item["box"]
+            original_b = _scale_box(box, scale)
+            print(
+                f"  rejected {reason:<11} box {box}  original={original_b}  "
+                f"area%={item['area_ratio'] * 100:.3f}  aspect={item['aspect']:.2f}"
+            )
+
+
+def _cv2_candidate_diagnostics(
+    cv2,
+    thresh,
+    width,
+    height,
+    *,
+    line_kernel=45,
+    text_kernel=(55, 12),
+    dilate_kernel=24,
+    iterations=2,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.58,
+    max_aspect=12,
+    min_aspect=0.05,
+):
+    sheet_area = width * height
+    kernel_x = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel, 3))
+    kernel_y = cv2.getStructuringElement(cv2.MORPH_RECT, (3, line_kernel))
+    horizontal = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_x, iterations=1)
+    vertical = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_y, iterations=1)
+    combined = cv2.bitwise_or(horizontal, vertical)
+
+    textish_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, text_kernel)
+    textish = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, textish_kernel, iterations=1)
+    combined = cv2.bitwise_or(combined, textish)
+
+    dilater = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_kernel, dilate_kernel))
+    combined = cv2.dilate(combined, dilater, iterations=iterations)
+    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    stats = {
+        "raw_contours": len(contours),
+        "kept": 0,
+        "too_small": 0,
+        "too_large": 0,
+        "bad_aspect": 0,
+        "title_block": 0,
+    }
+    rejected_examples: dict[str, list[dict]] = {}
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        area_ratio = area / max(1, sheet_area)
+        aspect = w / max(h, 1)
+        box = [x, y, w, h]
+        if area < sheet_area * min_area_ratio:
+            stats["too_small"] += 1
+            _record_rejection(rejected_examples, "too_small", box, area_ratio, aspect)
+            continue
+        if area > sheet_area * max_area_ratio:
+            stats["too_large"] += 1
+            _record_rejection(rejected_examples, "too_large", box, area_ratio, aspect)
+            continue
+        if aspect > max_aspect or aspect < min_aspect:
+            stats["bad_aspect"] += 1
+            _record_rejection(rejected_examples, "bad_aspect", box, area_ratio, aspect)
+            continue
+        if x > width * 0.55 and y > height * 0.72 and area > sheet_area * 0.025:
+            stats["title_block"] += 1
+            _record_rejection(rejected_examples, "title_block", box, area_ratio, aspect)
+            continue
+        stats["kept"] += 1
+        boxes.append(box)
+    return boxes, stats, rejected_examples
+
+
 def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool = False) -> None:
     img = cv2.imread(image_path)
     if img is None:
@@ -87,7 +200,21 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
     )
 
-    preview_boxes = _cv2_preview_boxes(cv2, thresh, width, height)
+    preview_candidates, preview_stats, preview_rejected = _cv2_candidate_diagnostics(
+        cv2,
+        thresh,
+        width,
+        height,
+        line_kernel=17,
+        text_kernel=(24, 6),
+        dilate_kernel=5,
+        iterations=1,
+        min_area_ratio=0.00012,
+        max_area_ratio=0.14,
+        max_aspect=18,
+    )
+    _print_candidate_diagnostics("Preview", preview_stats, preview_rejected, scale)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
     packed_layout = _estimate_packed_layout(preview_boxes, width, height)
     mode = "packed" if packed_layout else "loose"
     profiles = tuple(
@@ -102,8 +229,11 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
         candidate_profile = dict(profile)
         merge_dx = candidate_profile.pop("merge_dx")
         merge_dy = candidate_profile.pop("merge_dy")
-        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+        candidates, stats, rejected = _cv2_candidate_diagnostics(
+            cv2, thresh, width, height, **candidate_profile
+        )
         merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
+        _print_candidate_diagnostics(name.title(), stats, rejected, scale)
         print(f"{name.title()} profile candidates: {len(candidates)}")
         print(f"After merge - {name}: {len(merged)}")
         for b in merged:
