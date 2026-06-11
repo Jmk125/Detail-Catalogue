@@ -430,12 +430,15 @@ function renderBackgroundBar(status, localUploading = 0, localProcessing = 0) {
   bar.classList.toggle("hidden", !hasWork);
   if (!hasWork) return;
 
-  const parts = [];
-  if (localUploading) parts.push(`${localUploading} file(s) uploading`);
-  if (activePages) parts.push(`${activePages} sheet(s) rendering/detecting boxes`);
-  if (activeAi) parts.push(`${activeAi} AI tagging job(s) pending/running`);
-  if (localProcessing && !activePages) parts.push("starting sheet processing");
-  $("backgroundBarText").textContent = parts.join(" • ");
+  const pageParts = [];
+  if (localUploading) pageParts.push(`${localUploading} uploading`);
+  if (activePages) pageParts.push(`${activePages} rendering/detecting`);
+  if (localProcessing && !activePages) pageParts.push("starting");
+  $("backgroundBarTextPages").textContent = pageParts.join(" • ") || "idle";
+
+  const aiParts = [];
+  if (activeAi) aiParts.push(`${activeAi} pending/running`);
+  $("backgroundBarTextAi").textContent = aiParts.join(" • ") || "idle";
 
   const completedPages = (pages.ready || 0) + (pages.approved || 0) + (pages.skipped || 0) + (pages.failed || 0);
   const totalPages = completedPages + activePages;
@@ -443,10 +446,14 @@ function renderBackgroundBar(status, localUploading = 0, localProcessing = 0) {
   const totalAi = completedAi + activeAi + (ai.failed || 0);
   const uploadDone = uploadEntries.filter(e => e.status === "done" || e.status === "processing").length;
   const uploadTotal = uploadEntries.length;
-  const done = completedPages + completedAi + uploadDone;
-  const total = totalPages + totalAi + uploadTotal;
-  const pct = total ? Math.max(4, Math.min(100, Math.round((done / total) * 100))) : 12;
-  $("backgroundBarFill").style.width = `${pct}%`;
+
+  const pagesDone = completedPages + uploadDone;
+  const pagesTotal = totalPages + uploadTotal;
+  const pagesPct = pagesTotal ? Math.max(4, Math.min(100, Math.round((pagesDone / pagesTotal) * 100))) : 12;
+  $("backgroundBarFillPages").style.width = `${pagesPct}%`;
+
+  const aiPct = totalAi ? Math.max(4, Math.min(100, Math.round((completedAi / totalAi) * 100))) : 12;
+  $("backgroundBarFillAi").style.width = `${aiPct}%`;
 }
 
 function debounce(fn, delay) {
@@ -1053,7 +1060,7 @@ async function approveSheet() {
   renderProcessingStatus(data.processing_status);
   loadDetails();
   loadLibrary();
-  await loadLibraryFacets();
+  loadLibraryFacets();
   await loadNextReady(page.page_index);
 }
 

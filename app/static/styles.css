@@ -1204,36 +1204,50 @@ main {
 .background-bar {
   position: fixed;
   left: 16px;
-  right: 16px;
   bottom: 16px;
   z-index: 60;
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 8px 12px;
   border: 1px solid rgba(37, 99, 235, .35);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(15, 23, 42, .94);
   color: #fff;
-  box-shadow: 0 18px 50px rgba(15, 23, 42, .28);
+  font-size: 12px;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, .28);
 }
 
 .background-bar.hidden {
   display: none;
 }
 
-.background-bar-main {
+.background-bar-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 6px;
+  flex: 1 1 200px;
+  min-width: 160px;
 }
 
-.background-bar-main span {
+.background-bar-label {
+  flex: 0 0 auto;
+  color: #93c5fd;
+  font-weight: 600;
+}
+
+.background-bar-text {
+  flex: 0 0 auto;
   color: #dbeafe;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .background-progress {
-  height: 8px;
+  flex: 1 1 auto;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(255, 255, 255, .18);
