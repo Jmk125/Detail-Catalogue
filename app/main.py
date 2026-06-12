@@ -31,6 +31,7 @@ from .storage import (
     get_project_status,
     list_design_teams,
     list_details,
+    details_for_project_sheet,
     list_settings_entities,
     list_library_facets,
     list_project_options,
@@ -221,7 +222,12 @@ def preview_sheet_number_endpoint(req: SheetNumberPreviewRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    return {"sheet_number": sheet_number}
+    return {"sheet_number": sheet_number, "existing_sheet": details_for_project_sheet(req.project_id, sheet_number, exclude_page_id=req.page_id)}
+
+
+@app.get("/api/projects/{project_id}/sheet-details")
+def existing_sheet_details(project_id: str, sheet_number: str = Query(""), exclude_page_id: int | None = Query(None)):
+    return details_for_project_sheet(project_id, sheet_number, exclude_page_id=exclude_page_id)
 
 
 @app.post("/api/debug-sheet-number")
@@ -273,8 +279,9 @@ def library_search(
     tag: str = "",
     q: str = "",
     bookmarked: str = "",
+    sheet: str = "",
 ):
-    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "design_teams": design_teams, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked})}
+    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "design_teams": design_teams, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked, "sheet": sheet})}
 
 
 @app.get("/api/library/facets")

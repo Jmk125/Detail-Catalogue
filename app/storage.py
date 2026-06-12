@@ -528,6 +528,55 @@ def debug_sheet_number(project_id: str, page_id: int, sheet_box: dict[str, Any])
         crop_path.unlink(missing_ok=True)
 
 
+def details_for_project_sheet(project_id: str, sheet_number: str | None, exclude_page_id: int | None = None, limit: int = 12) -> dict[str, Any]:
+    """Return already-saved details for the same project sheet number."""
+    normalized = normalize_sheet_number(sheet_number)
+    if not project_id or not normalized:
+        return {"sheet_number": normalized, "count": 0, "details": []}
+    compact = normalized.replace("-", "").replace(".", "")
+    clauses = [
+        "details.project_id=?",
+        "(upper(details.sheet_number)=? OR upper(replace(replace(replace(details.sheet_number, '-', ''), '.', ''), ' ', ''))=?)",
+    ]
+    params: list[Any] = [project_id, normalized.upper(), compact.upper()]
+    if exclude_page_id is not None:
+        clauses.append("details.page_id != ?")
+        params.append(exclude_page_id)
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT details.id, details.detail_title, details.detail_number, details.sheet_number,
+                   details.project_id, details.page_id, details.thumbnail_path, details.crop_image_path,
+                   details.ai_status, details.created_at, pages.page_number, pages.global_index,
+                   source_files.filename AS source_filename
+            FROM details
+            JOIN pages ON pages.id = details.page_id
+            JOIN source_files ON source_files.id = details.source_file_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY details.created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        count_row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM details WHERE {' AND '.join(clauses)}",
+            params[:-1],
+        ).fetchone()
+    return {
+        "sheet_number": normalized,
+        "count": int(count_row["c"] if count_row else len(rows)),
+        "details": [detail_sheet_match_to_api(row) for row in rows],
+    }
+
+
+def detail_sheet_match_to_api(row: Any) -> dict[str, Any]:
+    d = dict(row)
+    d["thumbnail"] = d.pop("thumbnail_path")
+    d["crop_image"] = d.pop("crop_image_path")
+    return d
+
+
 def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None, sheet_number_override: str | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     with connect() as conn:
@@ -817,6 +866,16 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         clauses.append("details.bookmarked=1")
     if filters.get("csi"):
         clauses.append("details.csi_divisions_json LIKE ?"); params.append(f"%{filters['csi']}%")
+    if filters.get("sheet"):
+        sheet = filters["sheet"].strip()
+        normalized_sheet = normalize_sheet_number(sheet)
+        if normalized_sheet:
+            compact_sheet = normalized_sheet.replace("-", "").replace(".", "")
+            clauses.append("(upper(details.sheet_number)=? OR upper(replace(replace(replace(details.sheet_number, '-', ''), '.', ''), ' ', ''))=? OR details.sheet_number LIKE ?)")
+            params.extend([normalized_sheet.upper(), compact_sheet.upper(), f"%{sheet}%"])
+        else:
+            clauses.append("details.sheet_number LIKE ?")
+            params.append(f"%{sheet}%")
     if filters.get("q"):
         q = f"%{filters['q']}%"
         clauses.append(
