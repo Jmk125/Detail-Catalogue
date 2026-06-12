@@ -140,6 +140,7 @@ let uploadQueueRunning = false;
 let projectCreatePromise = null;
 let processingStarted = false;
 let backgroundStatusTimer = null;
+let reviewCompletePrompted = false;
 
 $("uploadBtn").addEventListener("click", processUploadedFiles);
 
@@ -297,6 +298,7 @@ async function processUploadedFiles() {
 
   try {
     processingStarted = true;
+    reviewCompletePrompted = false;
     for (const entry of uploadEntries) entry.status = "processing";
     renderSelectedFiles();
     resetReviewWorkspace();
@@ -393,6 +395,36 @@ async function responseErrorMessage(responseLike, fallback) {
   } catch {
     return responseLike.statusText || fallback;
   }
+}
+
+function resetUploadWorkflowForNextBatch() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  uploadEntries = [];
+  uploadQueueRunning = false;
+  projectCreatePromise = null;
+  processingStarted = false;
+  projectId = null;
+  manifest = null;
+  renderSelectedFiles();
+  updateUploadButtonState();
+  resetReviewWorkspace();
+  $("reviewPanel").classList.add("hidden");
+  $("processingStatus").classList.add("hidden");
+  $("status").textContent = "Ready for the next drawing set.";
+}
+
+function promptReviewCompleteAndReset(status) {
+  if (reviewCompletePrompted) return;
+  reviewCompletePrompted = true;
+  const approved = status?.pages_approved || 0;
+  const skipped = status?.pages_skipped || 0;
+  const failed = status?.pages_failed || 0;
+  const failedText = failed ? ` ${failed} sheet${failed === 1 ? "" : "s"} failed.` : "";
+  alert(`Drawing review complete. ${approved} sheet${approved === 1 ? "" : "s"} approved, ${skipped} sheet${skipped === 1 ? "" : "s"} skipped.${failedText} Click OK to clear the loaded drawings and start again.`);
+  resetUploadWorkflowForNextBatch();
 }
 
 function resetReviewWorkspace() {
@@ -608,6 +640,7 @@ function showProcessingNext(status = manifest?.processing_status) {
     hideSheetLoadingOverlay();
     $("sheetInfo").textContent = "All uploaded drawings have been reviewed.";
     $("detailsList").innerHTML = `<div class="done-state"><strong>Drawing review complete.</strong><br>${status?.pages_approved || 0} sheets approved, ${status?.pages_skipped || 0} sheets skipped, ${status?.pages_failed || 0} failed. AI tagging may continue in the background.</div>`;
+    promptReviewCompleteAndReset(status);
     return;
   }
   $("sheetInfo").textContent = "Processing next sheet...";
