@@ -10,15 +10,17 @@ from typing import Any
 import fitz
 from PIL import Image, ImageOps
 
+DIGIT_RUN = r"\d(?:\s*\d){0,3}"
 SHEET_NUMBER_RE = re.compile(
     r"(?<![A-Z0-9])"
     r"(?:[A-Z]{1,4}\s*[-_.]?\s*)?"
-    r"\d{1,4}"
-    r"(?:(?:\s*[-–—−_]\s*|\.)\d{1,4}){0,3}"
+    rf"{DIGIT_RUN}"
+    rf"(?:(?:\s*[-–—−_]\s*|\.){DIGIT_RUN}){{0,3}}"
     r"[A-Z]?"
     r"(?![A-Z0-9])",
     re.IGNORECASE,
 )
+COMPACT_NUMERIC_RE = re.compile(r"(?<![A-Z0-9])0(?:\s*\d){4,7}[A-Z]?(?![A-Z0-9])", re.IGNORECASE)
 BARE_NUMBER_RE = re.compile(r"^\d{1,4}(?:\.\d{1,3})?[A-Z]?$", re.IGNORECASE)
 LABEL_RE = re.compile(r"\b(?:sheet|sht)\s*(?:no\.?|number|#)?\b", re.IGNORECASE)
 
@@ -32,6 +34,9 @@ def normalize_sheet_number(value: str | None) -> str | None:
     text = re.sub(r"\s+", "", text)
     text = text.replace("_", "-")
     text = re.sub(r"-{2,}", "-", text)
+    if re.fullmatch(r"0\d{4,7}[A-Z]?", text):
+        suffix = text[2:]
+        text = f"{text[:2]}-{suffix}"
     text = re.sub(r"([A-Z]+)[.]?(\d)", r"\1\2", text)
     text = re.sub(r"([A-Z]+)(\d{2,4}[A-Z]?)$", r"\1-\2", text)
     return text or None
@@ -64,7 +69,7 @@ def parse_sheet_number_text(text: str | None) -> str | None:
         return None
     searchable = text.upper().replace("\n", " ")
     matches: list[tuple[tuple[int, int, int], str]] = []
-    for match in SHEET_NUMBER_RE.finditer(searchable):
+    for match in list(SHEET_NUMBER_RE.finditer(searchable)) + list(COMPACT_NUMERIC_RE.finditer(searchable)):
         candidate = normalize_sheet_number(match.group(0))
         if not candidate:
             continue

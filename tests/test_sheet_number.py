@@ -18,6 +18,10 @@ class SheetNumberReaderTests(unittest.TestCase):
         self.assertEqual(parse_sheet_number_text("07-005"), "07-005")
         self.assertEqual(parse_sheet_number_text("SHEET NUMBER 07 - 005"), "07-005")
 
+    def test_parse_reassembles_fragmented_structural_sheet_number(self):
+        self.assertEqual(parse_sheet_number_text("0 3 - 1 1 0"), "03-110")
+        self.assertEqual(parse_sheet_number_text("03110"), "03-110")
+
     def test_read_sheet_number_from_pdf_text_uses_red_box_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = Path(tmp) / "sheet.pdf"
@@ -41,6 +45,30 @@ class SheetNumberReaderTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "07-005")
+
+    def test_read_sheet_number_from_pdf_text_reassembles_separate_glyphs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "structural_sheet.pdf"
+            doc = fitz.open()
+            page = doc.new_page(width=612, height=792)
+            x = 500
+            for char in "03-110":
+                page.insert_text((x, 724), char, fontsize=20)
+                x += 16
+            doc.save(pdf_path)
+            doc.close()
+
+            result = read_sheet_number_from_pdf_text(
+                pdf_path,
+                0,
+                {"x": 920, "y": 1360, "w": 280, "h": 120},
+                image_width=1224,
+                image_height=1584,
+                pdf_width=612,
+                pdf_height=792,
+            )
+
+        self.assertEqual(result, "03-110")
 
 
 if __name__ == "__main__":
