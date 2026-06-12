@@ -26,6 +26,23 @@
     <section class="panel hero-panel">
       <h2>1. Upload Drawing Set</h2>
 
+      <div class="upload-target">
+        <div class="upload-target-options" role="radiogroup" aria-label="Upload target">
+          <label><input id="newProjectRadio" type="radio" name="uploadTarget" value="new" checked /> Create a new project</label>
+          <label><input id="existingProjectRadio" type="radio" name="uploadTarget" value="existing" /> Add drawings to an existing project</label>
+        </div>
+        <div id="existingProjectPicker" class="existing-project-picker hidden">
+          <label>
+            Existing Project
+            <select id="existingProjectSelect">
+              <option value="">Select an existing project...</option>
+            </select>
+          </label>
+          <button id="refreshProjectsBtn" type="button" class="secondary small-btn">Refresh Projects</button>
+        </div>
+        <p id="uploadTargetHint" class="hint">Create a project for this drawing set, or choose an existing project to append more PDFs for processing.</p>
+      </div>
+
       <div class="meta-grid">
         <label>
           Project Name
