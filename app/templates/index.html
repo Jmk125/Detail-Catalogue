@@ -105,6 +105,10 @@
             Click-drag empty sheet area = draw a new box. Drag inside a box = move. Drag near any box edge/corner = resize.
             Delete key removes selected box; matching detector boxes on later sheets in this upload are hidden automatically. If a dragged box overlaps one or more boxes by 50%+, the group is merged into the largest box on mouse-up.
           </p>
+          <h3>Sheet Number Preview</h3>
+          <div id="sheetNumberPreview" class="sheet-number-preview pending">Move the red Sheet # box over the sheet number to preview it here.</div>
+          <button id="sheetNumberDebugBtn" type="button" class="secondary small-btn">Debug Sheet # Read</button>
+          <pre id="sheetNumberDebug" class="sheet-number-debug hidden"></pre>
           <h3>Boxes</h3>
           <ol id="boxList"></ol>
           <h3>Saved Details</h3>
