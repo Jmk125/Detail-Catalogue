@@ -34,6 +34,12 @@ class RedetectSheetRequest(BaseModel):
     page_id: int
 
 
+class SheetNumberPreviewRequest(BaseModel):
+    project_id: str
+    page_id: int
+    sheet_box: dict
+
+
 class DetailUpdateRequest(BaseModel):
     project_name: Optional[str] = None
     design_team: Optional[str] = None
