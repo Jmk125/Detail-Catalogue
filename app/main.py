@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import DATA_ROOT, init_db
-from .models import ApproveSheetRequest, DetailUpdateRequest, RedetectSheetRequest, SheetNumberPreviewRequest, SkipSheetRequest
+from .models import ApproveSheetRequest, DetailUpdateRequest, RedetectSheetRequest, SheetNumberDebugRequest, SheetNumberPreviewRequest, SkipSheetRequest
 from .pdf_tools import count_pdf_pages
 from .processing import enqueue_project_processing, recover_stalled_processing
 from .settings import get_settings
@@ -24,6 +24,7 @@ from .storage import (
     delete_design_team_record,
     delete_detail,
     delete_project_record,
+    debug_sheet_number,
     get_detail,
     get_next_ready_page,
     get_project_manifest,
@@ -215,6 +216,16 @@ def preview_sheet_number_endpoint(req: SheetNumberPreviewRequest):
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"sheet_number": sheet_number}
+
+
+@app.post("/api/debug-sheet-number")
+def debug_sheet_number_endpoint(req: SheetNumberDebugRequest):
+    try:
+        return debug_sheet_number(req.project_id, req.page_id, req.sheet_box)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/api/approve-sheet")

@@ -349,6 +349,29 @@ aside {
   color: #8a1f1f;
 }
 
+.small-btn {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.sheet-number-debug {
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 360px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #1f2933;
+  color: #e7edf3;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 8px 0 14px;
+}
+
+.sheet-number-debug.hidden {
+  display: none;
+}
+
 #boxList li {
   padding: 4px;
   margin-bottom: 3px;

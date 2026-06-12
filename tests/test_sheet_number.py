@@ -3,8 +3,9 @@ import unittest
 from pathlib import Path
 
 import fitz
+from PIL import Image
 
-from app.sheet_number import parse_sheet_number_text, read_sheet_number_from_pdf_text
+from app.sheet_number import debug_sheet_number_read, parse_sheet_number_text, read_sheet_number_from_pdf_text
 
 
 class SheetNumberReaderTests(unittest.TestCase):
@@ -69,6 +70,33 @@ class SheetNumberReaderTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "03-110")
+
+    def test_debug_sheet_number_read_reports_pdf_text_and_final_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pdf_path = tmp_path / "debug_sheet.pdf"
+            crop_path = tmp_path / "crop.png"
+            Image.new("RGB", (280, 120), "white").save(crop_path)
+            doc = fitz.open()
+            page = doc.new_page(width=612, height=792)
+            page.insert_text((500, 724), "03-110", fontsize=20)
+            doc.save(pdf_path)
+            doc.close()
+
+            debug = debug_sheet_number_read(
+                pdf_path,
+                0,
+                {"x": 920, "y": 1360, "w": 280, "h": 120},
+                crop_path,
+                image_width=1224,
+                image_height=1584,
+                pdf_width=612,
+                pdf_height=792,
+            )
+
+        self.assertEqual(debug["final_sheet_number"], "03-110")
+        self.assertEqual(debug["pdf_text"]["parsed"], "03-110")
+        self.assertIn("clip_pdf_points", debug)
 
 
 if __name__ == "__main__":

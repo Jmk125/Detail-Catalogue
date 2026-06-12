@@ -123,6 +123,108 @@ def read_sheet_number_from_pdf_text(pdf_path: Path, source_page_index: int, shee
         doc.close()
 
 
+def _format_rect(rect: fitz.Rect | None) -> dict[str, float] | None:
+    if rect is None:
+        return None
+    return {"x0": round(rect.x0, 3), "y0": round(rect.y0, 3), "x1": round(rect.x1, 3), "y1": round(rect.y1, 3)}
+
+
+def _word_to_debug(word: Any) -> dict[str, Any]:
+    return {
+        "x0": round(float(word[0]), 3),
+        "y0": round(float(word[1]), 3),
+        "x1": round(float(word[2]), 3),
+        "y1": round(float(word[3]), 3),
+        "text": str(word[4]) if len(word) >= 5 else "",
+        "block": int(word[5]) if len(word) >= 6 else None,
+        "line": int(word[6]) if len(word) >= 7 else None,
+        "word": int(word[7]) if len(word) >= 8 else None,
+    }
+
+
+def _run_tesseract_raw(image_path: Path) -> dict[str, Any]:
+    if shutil.which("tesseract") is None:
+        return {"available": False, "stdout": "", "stderr": "", "returncode": None, "parsed": None}
+    processed_path = _preprocess_for_tesseract(image_path)
+    try:
+        cmd = [
+            "tesseract",
+            str(processed_path),
+            "stdout",
+            "--psm",
+            "6",
+            "-c",
+            "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.# ",
+        ]
+        completed = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+        return {
+            "available": True,
+            "command": " ".join(cmd),
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "returncode": completed.returncode,
+            "parsed": parse_sheet_number_text(completed.stdout) if completed.returncode == 0 else None,
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"available": True, "stdout": "", "stderr": str(exc), "returncode": None, "parsed": None}
+    finally:
+        processed_path.unlink(missing_ok=True)
+
+
+def debug_sheet_number_read(
+    pdf_path: Path,
+    source_page_index: int,
+    sheet_box: dict[str, Any],
+    image_path: Path,
+    image_width: int,
+    image_height: int,
+    pdf_width: float,
+    pdf_height: float,
+) -> dict[str, Any]:
+    """Return local extraction diagnostics for the current red sheet-number box."""
+    clip = _clip_from_image_box(sheet_box, image_width, image_height, pdf_width, pdf_height)
+    debug: dict[str, Any] = {
+        "sheet_box_image_pixels": sheet_box,
+        "image_size": {"width": image_width, "height": image_height},
+        "pdf_size": {"width": pdf_width, "height": pdf_height},
+        "clip_pdf_points": _format_rect(clip),
+        "pdf_text": {"raw": "", "parsed": None},
+        "pdf_words": {"joined": "", "parsed": None, "count": 0, "items": []},
+        "tesseract": {},
+        "final_sheet_number": None,
+        "notes": [],
+    }
+    if clip is None:
+        debug["notes"].append("The red sheet-number box could not be mapped to a valid PDF clip rectangle.")
+    else:
+        doc = fitz.open(pdf_path)
+        try:
+            page = doc[source_page_index]
+            text = page.get_text("text", clip=clip) or ""
+            words = page.get_text("words", clip=clip, sort=True) or []
+            joined_words = " ".join(str(word[4]) for word in words if len(word) >= 5)
+            debug["pdf_text"] = {"raw": text, "parsed": parse_sheet_number_text(text)}
+            debug["pdf_words"] = {
+                "joined": joined_words,
+                "parsed": parse_sheet_number_text(joined_words),
+                "count": len(words),
+                "items": [_word_to_debug(word) for word in words[:80]],
+            }
+            if not text.strip() and not words:
+                debug["notes"].append("No selectable PDF text/words were found inside the red box; this sheet may require OCR.")
+        finally:
+            doc.close()
+    debug["tesseract"] = _run_tesseract_raw(image_path)
+    debug["final_sheet_number"] = (
+        debug["pdf_text"].get("parsed")
+        or debug["pdf_words"].get("parsed")
+        or debug["tesseract"].get("parsed")
+    )
+    if not debug["final_sheet_number"]:
+        debug["notes"].append("No sheet number was parsed from PDF text, PDF words, or local Tesseract OCR.")
+    return debug
+
+
 def _preprocess_for_tesseract(image_path: Path) -> Path:
     image = Image.open(image_path)
     try:
