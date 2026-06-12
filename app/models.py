@@ -17,6 +17,7 @@ class ApproveSheetRequest(BaseModel):
     page_id: int
     boxes: List[Box]
     sheet_box: Optional[dict] = None
+    sheet_number_override: Optional[str] = None
 
 
 class Designer(BaseModel):
@@ -32,6 +33,18 @@ class SkipSheetRequest(BaseModel):
 class RedetectSheetRequest(BaseModel):
     project_id: str
     page_id: int
+
+
+class SheetNumberPreviewRequest(BaseModel):
+    project_id: str
+    page_id: int
+    sheet_box: dict
+
+
+class SheetNumberDebugRequest(BaseModel):
+    project_id: str
+    page_id: int
+    sheet_box: dict
 
 
 class DetailUpdateRequest(BaseModel):
