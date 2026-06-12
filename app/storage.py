@@ -106,6 +106,25 @@ def list_settings_entities() -> dict[str, Any]:
         return {"projects": projects, "design_teams": firms}
 
 
+def list_project_options() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT projects.id, projects.project_name, dt.name AS design_team, projects.discipline,
+                   projects.upload_date, COUNT(DISTINCT source_files.id) AS source_count,
+                   COUNT(DISTINCT pages.id) AS page_count
+            FROM projects
+            LEFT JOIN design_teams dt ON dt.id = projects.design_team_id
+            LEFT JOIN source_files ON source_files.project_id = projects.id
+            LEFT JOIN pages ON pages.project_id = projects.id
+            GROUP BY projects.id
+            ORDER BY projects.upload_date DESC
+            LIMIT 200
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def create_project_record(project_id: str, project_name: str, design_team: str, discipline: str, settings: StorageSettings | None = None, designers: list[dict[str, str]] | None = None) -> None:
     settings = settings or get_settings()
     pdir = project_dir(project_id)
