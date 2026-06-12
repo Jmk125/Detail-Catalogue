@@ -33,6 +33,7 @@ from .storage import (
     list_details,
     list_settings_entities,
     list_library_facets,
+    list_project_options,
     make_project_zip,
     process_all_pending_ai_jobs,
     process_pending_ai_jobs,
@@ -72,6 +73,11 @@ def design_teams(q: str = ""):
 @app.get("/api/background-status")
 def background_status():
     return background_activity_status()
+
+
+@app.get("/api/projects")
+def list_projects():
+    return {"projects": list_project_options()}
 
 
 @app.post("/api/projects")

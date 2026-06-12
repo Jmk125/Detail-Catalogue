@@ -104,6 +104,7 @@ const fileInput = $("pdfFile");
 const canvasWrap = $("canvasWrap");
 
 loadDesignTeams();
+loadProjectOptions();
 loadLibraryFacets();
 loadLibrary();
 
@@ -142,8 +143,113 @@ let uploadQueueRunning = false;
 let projectCreatePromise = null;
 let processingStarted = false;
 let backgroundStatusTimer = null;
+let reviewCompletePrompted = false;
+let existingProjects = [];
 
 $("uploadBtn").addEventListener("click", processUploadedFiles);
+$("newProjectRadio").addEventListener("change", handleUploadTargetChange);
+$("existingProjectRadio").addEventListener("change", handleUploadTargetChange);
+$("existingProjectSelect").addEventListener("change", handleExistingProjectSelection);
+$("refreshProjectsBtn").addEventListener("click", loadProjectOptions);
+
+function selectedUploadMode() {
+  return $("existingProjectRadio").checked ? "existing" : "new";
+}
+
+function selectedExistingProject() {
+  const selectedId = $("existingProjectSelect").value;
+  return existingProjects.find(p => p.id === selectedId) || null;
+}
+
+function setUploadTargetControlsDisabled(disabled) {
+  $("newProjectRadio").disabled = disabled;
+  $("existingProjectRadio").disabled = disabled;
+  $("existingProjectSelect").disabled = disabled || selectedUploadMode() !== "existing";
+  $("refreshProjectsBtn").disabled = disabled;
+}
+
+async function loadProjectOptions() {
+  const select = $("existingProjectSelect");
+  const previous = select.value;
+  try {
+    const res = await fetch("/api/projects");
+    if (!res.ok) throw new Error("Could not load projects.");
+    const data = await res.json();
+    existingProjects = data.projects || [];
+    select.innerHTML = `<option value="">Select an existing project...</option>`;
+    for (const project of existingProjects) {
+      const option = document.createElement("option");
+      option.value = project.id;
+      const name = project.project_name || "Unnamed project";
+      const team = project.design_team ? ` — ${project.design_team}` : "";
+      const counts = ` (${Number(project.source_count || 0)} PDFs, ${Number(project.page_count || 0)} sheets)`;
+      option.textContent = `${name}${team}${counts}`;
+      select.appendChild(option);
+    }
+    if (previous && existingProjects.some(p => p.id === previous)) select.value = previous;
+    handleExistingProjectSelection();
+  } catch (err) {
+    console.warn(err);
+  }
+}
+
+function handleUploadTargetChange() {
+  const mode = selectedUploadMode();
+  const picker = $("existingProjectPicker");
+  picker.classList.toggle("hidden", mode !== "existing");
+  $("existingProjectSelect").disabled = mode !== "existing" || uploadEntries.length > 0 || processingStarted || uploadQueueRunning;
+
+  const usingExisting = mode === "existing";
+  $("projectName").readOnly = usingExisting;
+  $("designTeam").readOnly = usingExisting;
+  $("discipline").disabled = usingExisting;
+  for (const input of document.querySelectorAll("#designerRows input")) input.readOnly = usingExisting;
+
+  if (usingExisting) {
+    handleExistingProjectSelection();
+  } else {
+    projectId = null;
+    manifest = null;
+    $("projectName").classList.remove("input-error");
+    $("designTeam").classList.remove("input-error");
+    $("uploadTargetHint").textContent = "Create a project for this drawing set, or choose an existing project to append more PDFs for processing.";
+  }
+  setUploadTargetControlsDisabled(uploadEntries.length > 0 || processingStarted || uploadQueueRunning);
+  updateUploadButtonState();
+}
+
+async function handleExistingProjectSelection() {
+  if (selectedUploadMode() !== "existing") return;
+  const selected = selectedExistingProject();
+  if (!selected) {
+    projectId = null;
+    manifest = null;
+    $("projectName").value = "";
+    $("designTeam").value = "";
+    $("discipline").value = "unknown";
+    renderEngineerFields("designerRows");
+    $("uploadTargetHint").textContent = "Select an existing project before adding PDFs so the new drawings are appended to that project.";
+    updateUploadButtonState();
+    return;
+  }
+
+  projectId = selected.id;
+  $("projectName").value = selected.project_name || "";
+  $("designTeam").value = selected.design_team || "";
+  $("discipline").value = DISCIPLINE_VALUES.includes(selected.discipline) ? selected.discipline : "unknown";
+  $("uploadTargetHint").textContent = `New PDFs will be uploaded to ${selected.project_name || "this existing project"} instead of creating another project.`;
+  try {
+    const res = await fetch(`/api/projects/${selected.id}`);
+    if (res.ok) {
+      manifest = await res.json();
+      renderEngineerFields("designerRows", manifest.designers || []);
+      for (const input of document.querySelectorAll("#designerRows input")) input.readOnly = true;
+    }
+  } catch (err) {
+    console.warn(err);
+  }
+  updateUploadButtonState();
+}
 
 function addSelectedFiles(fileList) {
   if (!validateUploadMetadata()) {
@@ -208,8 +314,9 @@ function updateUploadButtonState() {
   const busyUploading = uploadQueueRunning || uploadEntries.some(e => e.status === "uploading");
   const hasErrors = uploadEntries.some(e => e.status === "error");
   const allUploaded = hasFiles && uploadEntries.every(e => e.status === "done");
-  const hasRequiredMetadata = Boolean($("projectName").value.trim() && $("designTeam").value.trim());
+  const hasRequiredMetadata = selectedUploadMode() === "existing" ? Boolean($("existingProjectSelect").value) : Boolean($("projectName").value.trim() && $("designTeam").value.trim());
   btn.disabled = processingStarted || busyUploading || !allUploaded || hasErrors || !hasRequiredMetadata;
+  setUploadTargetControlsDisabled(hasFiles || processingStarted || busyUploading);
   if (processingStarted) {
     btn.textContent = "Processing...";
   } else if (busyUploading) {
@@ -265,6 +372,16 @@ async function uploadQueuedFiles() {
 }
 
 async function ensureUploadProject() {
+  if (selectedUploadMode() === "existing") {
+    const selectedId = $("existingProjectSelect").value;
+    if (!selectedId) throw new Error("Select an existing project before uploading PDFs.");
+    if (projectId === selectedId && manifest) return manifest;
+    const res = await fetch(`/api/projects/${selectedId}`);
+    if (!res.ok) throw new Error(await responseErrorMessage(res, "Could not load the selected project."));
+    manifest = await res.json();
+    projectId = selectedId;
+    return manifest;
+  }
   if (projectId) return manifest;
   if (!projectCreatePromise) {
     projectCreatePromise = createEmptyProject()
@@ -299,6 +416,7 @@ async function processUploadedFiles() {
 
   try {
     processingStarted = true;
+    reviewCompletePrompted = false;
     for (const entry of uploadEntries) entry.status = "processing";
     renderSelectedFiles();
     resetReviewWorkspace();
@@ -314,6 +432,7 @@ async function processUploadedFiles() {
     startPolling();
     await loadNextReady(-1);
     await loadDesignTeams();
+    await loadProjectOptions();
     await loadLibraryFacets();
   } catch (err) {
     processingStarted = false;
@@ -326,6 +445,17 @@ async function processUploadedFiles() {
 }
 
 function validateUploadMetadata() {
+  if (selectedUploadMode() === "existing") {
+    const select = $("existingProjectSelect");
+    select.classList.toggle("input-error", !select.value);
+    if (!select.value) {
+      select.focus();
+      alert("Select an existing project before uploading drawings to it.");
+      return false;
+    }
+    return true;
+  }
+
   const required = [$("projectName"), $("designTeam")];
   for (const input of required) input.classList.toggle("input-error", !input.value.trim());
   const missing = required.filter(input => !input.value.trim());
@@ -395,6 +525,36 @@ async function responseErrorMessage(responseLike, fallback) {
   } catch {
     return responseLike.statusText || fallback;
   }
+}
+
+function resetUploadWorkflowForNextBatch() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  uploadEntries = [];
+  uploadQueueRunning = false;
+  projectCreatePromise = null;
+  processingStarted = false;
+  projectId = selectedUploadMode() === "existing" ? projectId : null;
+  manifest = selectedUploadMode() === "existing" ? manifest : null;
+  renderSelectedFiles();
+  updateUploadButtonState();
+  resetReviewWorkspace();
+  $("reviewPanel").classList.add("hidden");
+  $("processingStatus").classList.add("hidden");
+  $("status").textContent = "Ready for the next drawing set.";
+}
+
+function promptReviewCompleteAndReset(status) {
+  if (reviewCompletePrompted) return;
+  reviewCompletePrompted = true;
+  const approved = status?.pages_approved || 0;
+  const skipped = status?.pages_skipped || 0;
+  const failed = status?.pages_failed || 0;
+  const failedText = failed ? ` ${failed} sheet${failed === 1 ? "" : "s"} failed.` : "";
+  alert(`Drawing review complete. ${approved} sheet${approved === 1 ? "" : "s"} approved, ${skipped} sheet${skipped === 1 ? "" : "s"} skipped.${failedText} Click OK to clear the loaded drawings and start again.`);
+  resetUploadWorkflowForNextBatch();
 }
 
 function resetReviewWorkspace() {
@@ -490,6 +650,7 @@ function showTab(tabId) {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
   }
   if (tabId === "libraryTab") { loadLibraryFacets(); loadLibrary(); }
+  if (tabId === "processTab") loadProjectOptions();
   if (tabId === "compareTab") renderComparison();
 }
 
@@ -614,6 +775,7 @@ function showProcessingNext(status = manifest?.processing_status) {
     hideSheetLoadingOverlay();
     $("sheetInfo").textContent = "All uploaded drawings have been reviewed.";
     $("detailsList").innerHTML = `<div class="done-state"><strong>Drawing review complete.</strong><br>${status?.pages_approved || 0} sheets approved, ${status?.pages_skipped || 0} sheets skipped, ${status?.pages_failed || 0} failed. AI tagging may continue in the background.</div>`;
+    promptReviewCompleteAndReset(status);
     return;
   }
   $("sheetInfo").textContent = "Processing next sheet...";
