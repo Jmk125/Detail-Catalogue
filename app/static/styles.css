@@ -313,6 +313,42 @@ aside {
   font-size: 13px;
 }
 
+.sheet-number-preview {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 10px;
+  margin: 8px 0 14px;
+  font-size: 14px;
+  background: #fafafa;
+  color: #555;
+}
+
+.sheet-number-preview.ok {
+  border-color: #54a35f;
+  background: #eef9f0;
+  color: #145522;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.sheet-number-preview.loading,
+.sheet-number-preview.pending {
+  border-color: #d6d6d6;
+  background: #f7f7f7;
+}
+
+.sheet-number-preview.empty {
+  border-color: #e2b84c;
+  background: #fff8df;
+  color: #6b4a00;
+}
+
+.sheet-number-preview.error {
+  border-color: #d36b6b;
+  background: #fff0f0;
+  color: #8a1f1f;
+}
+
 #boxList li {
   padding: 4px;
   margin-bottom: 3px;

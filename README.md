@@ -35,7 +35,7 @@ Approved detail crops and thumbnails are the permanent visual artifacts. Full re
 - Render/detect pages incrementally in a background task so review can start as soon as the first sheet is ready.
 - Review crop boxes with the existing zoom, pan, move, edge/corner resize, delete-key, and overlap-merge behavior.
 - Approve or skip one sheet at a time; approval saves crops immediately and queues durable AI jobs.
-- Sheet-number capture from the red review box is local and quota-free: the app first reads selectable PDF text in that box and can optionally fall back to a local `tesseract` command if installed.
+- Sheet-number capture from the red review box is local and quota-free: the app first reads selectable PDF text in that box and can optionally fall back to a local `tesseract` command if installed. The review sidebar previews the currently read sheet number before approval.
 - Browse/search the local detail library by project, design team, discipline, CSI, tag, and free text.
 
 

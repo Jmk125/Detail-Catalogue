@@ -14,6 +14,8 @@ let drawState = null;
 let deletedBoxPatterns = [];
 let sheetBox = null;
 let sheetDragState = null;
+let sheetNumberPreviewTimer = null;
+let sheetNumberPreviewRequestId = 0;
 let compareMode = false;
 const compareDetailIds = new Set();
 const compareDetails = new Map();
@@ -408,6 +410,7 @@ function resetReviewWorkspace() {
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
   $("detailsList").innerHTML = "";
+  setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
   $("sheetInfo").textContent = "";
 }
 
@@ -597,6 +600,7 @@ function showProcessingNext(status = manifest?.processing_status) {
   $("sheetImage").removeAttribute("src");
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
+  setSheetNumberPreview("pending", "Waiting for the next ready sheet...");
   const pagesReady = status?.pages_ready || 0;
   const pagesProcessing = status?.pages_processing || 0;
   const remainingReviewable = pagesReady + pagesProcessing;
@@ -630,6 +634,7 @@ function loadPage() {
     sheetBox = clampSheetBox(page.sheet_box || manifest.last_sheet_box || defaultSheetBox(img), img);
     fitToView();
     renderBoxes();
+    scheduleSheetNumberPreview(50);
   };
   img.onerror = () => {
     loadedPageId = null;
@@ -891,6 +896,53 @@ function stopSheetDrag() {
   sheetDragState = null;
   document.removeEventListener("mousemove", onSheetDrag);
   document.removeEventListener("mouseup", stopSheetDrag);
+  scheduleSheetNumberPreview(150);
+}
+
+function currentReadyPage() {
+  if (!manifest) return null;
+  return manifest.pages.find(p => p.page_index === pageIndex && p.status === "ready") || null;
+}
+
+function setSheetNumberPreview(state, text) {
+  const el = $("sheetNumberPreview");
+  if (!el) return;
+  el.className = `sheet-number-preview ${state}`;
+  el.textContent = text;
+}
+
+function scheduleSheetNumberPreview(delay = 250) {
+  clearTimeout(sheetNumberPreviewTimer);
+  const page = currentReadyPage();
+  if (!projectId || !page || !sheetBox) {
+    setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
+    return;
+  }
+  setSheetNumberPreview("loading", "Reading sheet number from the red box...");
+  sheetNumberPreviewTimer = setTimeout(() => previewSheetNumber(page), delay);
+}
+
+async function previewSheetNumber(page) {
+  const requestId = ++sheetNumberPreviewRequestId;
+  try {
+    const res = await fetch("/api/preview-sheet-number", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ project_id: projectId, page_id: page.id, sheet_box: sheetBox })
+    });
+    if (requestId !== sheetNumberPreviewRequestId) return;
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (data.sheet_number) {
+      setSheetNumberPreview("ok", `Read: ${data.sheet_number}`);
+    } else {
+      setSheetNumberPreview("empty", "No sheet number read yet. Adjust the red box to include the full sheet number.");
+    }
+  } catch (err) {
+    if (requestId !== sheetNumberPreviewRequestId) return;
+    console.error(err);
+    setSheetNumberPreview("error", "Could not preview sheet number for this box.");
+  }
 }
 
 function renderBoxList() {

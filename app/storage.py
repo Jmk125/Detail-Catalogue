@@ -420,6 +420,32 @@ def save_sheet_box_crop(project_id: str, page_id: int, page: Any, page_img_path:
     return sheet_number or read_sheet_number_with_tesseract(crop_path)
 
 
+def preview_sheet_number(project_id: str, page_id: int, sheet_box: dict[str, Any]) -> str | None:
+    """Read the current red sheet-number box for a ready page without approving the sheet."""
+    with connect() as conn:
+        page = conn.execute(
+            """
+            SELECT pages.*, source_files.filename, source_files.storage_path
+            FROM pages
+            JOIN source_files ON source_files.id = pages.source_file_id
+            WHERE pages.id=? AND pages.project_id=?
+            """,
+            (page_id, project_id),
+        ).fetchone()
+        if not page:
+            raise FileNotFoundError("Page not found")
+        if page["status"] != "ready":
+            raise ValueError("Only ready, unapproved pages can preview sheet numbers")
+        image_rel = page["image_path"]
+
+    if not image_rel:
+        raise FileNotFoundError("Rendered page image is missing")
+    page_img_path = project_dir(project_id) / image_rel
+    if not page_img_path.exists():
+        raise FileNotFoundError("Rendered page image is not available")
+    return save_sheet_box_crop(project_id, page_id, page, page_img_path, sheet_box)
+
+
 def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     with connect() as conn:
