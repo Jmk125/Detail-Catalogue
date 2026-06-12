@@ -23,6 +23,9 @@ class SheetNumberReaderTests(unittest.TestCase):
         self.assertEqual(parse_sheet_number_text("0 3 - 1 1 0"), "03-110")
         self.assertEqual(parse_sheet_number_text("03110"), "03-110")
 
+    def test_parse_corrects_common_ocr_confusion_in_numeric_sheet_number(self):
+        self.assertEqual(parse_sheet_number_text("0G-110"), "03-110")
+
     def test_read_sheet_number_from_pdf_text_uses_red_box_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = Path(tmp) / "sheet.pdf"

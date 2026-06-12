@@ -17,6 +17,7 @@ class ApproveSheetRequest(BaseModel):
     page_id: int
     boxes: List[Box]
     sheet_box: Optional[dict] = None
+    sheet_number_override: Optional[str] = None
 
 
 class Designer(BaseModel):

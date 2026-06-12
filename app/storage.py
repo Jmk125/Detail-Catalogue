@@ -13,7 +13,7 @@ from .ai_tagging import build_ai_prompt_context, get_ai_provider
 from .database import PROJECTS_ROOT, connect, json_loads, row_to_dict, utc_now
 from .detector import detect_candidate_detail_boxes
 from .settings import StorageSettings, get_settings
-from .sheet_number import debug_sheet_number_read, read_sheet_number_from_pdf_text, read_sheet_number_with_template_ocr, read_sheet_number_with_tesseract
+from .sheet_number import debug_sheet_number_read, normalize_sheet_number, read_sheet_number_from_pdf_text, read_sheet_number_with_template_ocr, read_sheet_number_with_tesseract
 
 
 def project_dir(project_id: str) -> Path:
@@ -528,7 +528,7 @@ def debug_sheet_number(project_id: str, page_id: int, sheet_box: dict[str, Any])
         crop_path.unlink(missing_ok=True)
 
 
-def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None, sheet_number_override: str | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
     with connect() as conn:
         page = conn.execute(
@@ -554,8 +554,8 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
     if not page_img_path.exists():
         raise FileNotFoundError("Rendered page image has already been cleaned up")
 
-    sheet_number = None
-    if sheet_box:
+    sheet_number = normalize_sheet_number(sheet_number_override) if sheet_number_override else None
+    if not sheet_number and sheet_box:
         sheet_number = save_sheet_box_crop(project_id, page_id, page, page_img_path, sheet_box)
 
     records = []

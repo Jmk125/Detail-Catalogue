@@ -61,6 +61,7 @@ $("redetectBtn").addEventListener("click", redetectSheet);
 $("deleteBtn").addEventListener("click", deleteSelected);
 $("approveBtn").addEventListener("click", approveSheet);
 $("sheetNumberDebugBtn").addEventListener("click", debugSheetNumber);
+$("sheetNumberOverride").addEventListener("input", updateSheetNumberOverridePreview);
 $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
@@ -571,6 +572,8 @@ function resetReviewWorkspace() {
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
   $("detailsList").innerHTML = "";
+  const override = $("sheetNumberOverride");
+  if (override) override.value = "";
   setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
   clearSheetNumberDebug();
   $("sheetInfo").textContent = "";
@@ -800,6 +803,8 @@ function loadPage() {
     fitToView();
     renderBoxes();
     clearSheetNumberDebug();
+    const override = $("sheetNumberOverride");
+    if (override) override.value = "";
     scheduleSheetNumberPreview(50);
   };
   img.onerror = () => {
@@ -1077,9 +1082,28 @@ function setSheetNumberPreview(state, text) {
   el.textContent = text;
 }
 
+function currentSheetNumberOverride() {
+  const input = $("sheetNumberOverride");
+  return input ? input.value.trim() : "";
+}
+
+function updateSheetNumberOverridePreview() {
+  const value = currentSheetNumberOverride();
+  if (value) {
+    setSheetNumberPreview("ok", `Will save manual sheet #: ${value}`);
+  } else {
+    scheduleSheetNumberPreview(150);
+  }
+}
+
 function scheduleSheetNumberPreview(delay = 250) {
   clearTimeout(sheetNumberPreviewTimer);
   const page = currentReadyPage();
+  const override = currentSheetNumberOverride();
+  if (override) {
+    setSheetNumberPreview("ok", `Will save manual sheet #: ${override}`);
+    return;
+  }
   if (!projectId || !page || !sheetBox) {
     setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
     return;
@@ -1372,7 +1396,7 @@ async function approveSheet() {
   const res = await fetch("/api/approve-sheet", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ project_id: projectId, page_id: page.id, boxes, sheet_box: sheetBox })
+    body: JSON.stringify({ project_id: projectId, page_id: page.id, boxes, sheet_box: sheetBox, sheet_number_override: currentSheetNumberOverride() || null })
   });
   if (!res.ok) { hideSheetLoadingOverlay(); alert(await res.text()); return; }
   const data = await res.json();

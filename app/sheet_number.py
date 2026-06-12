@@ -25,11 +25,19 @@ BARE_NUMBER_RE = re.compile(r"^\d{1,4}(?:\.\d{1,3})?[A-Z]?$", re.IGNORECASE)
 LABEL_RE = re.compile(r"\b(?:sheet|sht)\s*(?:no\.?|number|#)?\b", re.IGNORECASE)
 
 
+def _correct_common_ocr_confusions(text: str) -> str:
+    """Fix common OCR substitutions inside otherwise numeric sheet numbers."""
+    text = re.sub(r"(?<=\d)G(?=\s*[-–—−_.]|\s*\d|$)", "3", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<=\d)O(?=\s*[-–—−_.]|\s*\d|$)", "0", text, flags=re.IGNORECASE)
+    return text
+
+
 def normalize_sheet_number(value: str | None) -> str | None:
     if not value:
         return None
     text = value.strip().upper()
     text = re.sub(r"^[^A-Z0-9]+|[^A-Z0-9]+$", "", text)
+    text = _correct_common_ocr_confusions(text)
     text = re.sub(r"[–—−]", "-", text)
     text = re.sub(r"\s+", "", text)
     text = text.replace("_", "-")
@@ -68,15 +76,20 @@ def parse_sheet_number_text(text: str | None) -> str | None:
     if not text:
         return None
     searchable = text.upper().replace("\n", " ")
+    searchables = [searchable]
+    corrected = _correct_common_ocr_confusions(searchable)
+    if corrected != searchable:
+        searchables.append(corrected)
     matches: list[tuple[tuple[int, int, int], str]] = []
-    for match in list(SHEET_NUMBER_RE.finditer(searchable)) + list(COMPACT_NUMERIC_RE.finditer(searchable)):
-        candidate = normalize_sheet_number(match.group(0))
-        if not candidate:
-            continue
-        # Ignore common title-block noise that is unlikely to be a sheet number.
-        if candidate in {"0", "00", "000", "0000"}:
-            continue
-        matches.append((_candidate_score(candidate, searchable, match.start()), candidate))
+    for source in searchables:
+        for match in list(SHEET_NUMBER_RE.finditer(source)) + list(COMPACT_NUMERIC_RE.finditer(source)):
+            candidate = normalize_sheet_number(match.group(0))
+            if not candidate:
+                continue
+            # Ignore common title-block noise that is unlikely to be a sheet number.
+            if candidate in {"0", "00", "000", "0000"}:
+                continue
+            matches.append((_candidate_score(candidate, source, match.start()), candidate))
     if not matches:
         return None
     matches.sort(reverse=True)

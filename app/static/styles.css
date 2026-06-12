@@ -349,6 +349,24 @@ aside {
   color: #8a1f1f;
 }
 
+.sheet-number-override {
+  display: block;
+  margin: 8px 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.sheet-number-override input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
 .small-btn {
   font-size: 12px;
   padding: 6px 8px;

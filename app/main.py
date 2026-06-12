@@ -238,7 +238,7 @@ def debug_sheet_number_endpoint(req: SheetNumberDebugRequest):
 def approve_sheet(req: ApproveSheetRequest, background_tasks: BackgroundTasks):
     boxes = [b.model_dump() for b in req.boxes]
     try:
-        records = save_approved_crops(req.project_id, req.page_id, boxes, sheet_box=req.sheet_box)
+        records = save_approved_crops(req.project_id, req.page_id, boxes, sheet_box=req.sheet_box, sheet_number_override=req.sheet_number_override)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
