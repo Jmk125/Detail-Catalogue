@@ -214,6 +214,40 @@ def _estimate_packed_layout(boxes, width, height, raw_count=None):
     return _packed_layout_metrics(boxes, width, height, raw_count=raw_count)["packed_layout"]
 
 
+def _cv2_threshold_variants(cv2, gray):
+    """Return threshold masks from conservative to increasingly sensitive.
+
+    Some architects export very light gray linework that disappears during the
+    production downscale. The historical adaptive threshold (C=15) is intentionally
+    conservative, but it can turn those faint pixels into a fully blank mask. Keep
+    that behavior first, then fall back to lower adaptive constants and finally a
+    high global foreground threshold when earlier passes find no detail boxes.
+    """
+    variants = [
+        (
+            "adaptive_c15",
+            cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
+            ),
+        ),
+        (
+            "adaptive_c7",
+            cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 7
+            ),
+        ),
+        (
+            "adaptive_c3",
+            cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 3
+            ),
+        ),
+    ]
+    _, global_light = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    variants.append(("global_lt250", global_light))
+    return variants
+
+
 def _cv2_preview_candidates(cv2, thresh, width, height):
     return _cv2_candidates(
         cv2,
@@ -570,6 +604,30 @@ def _cv2_candidates(
     return boxes
 
 
+def _cv2_boxes_from_threshold(cv2, thresh, width, height):
+    preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
+    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
+
+    # Multi-scale detection adapts to sheet density. Packed sheets use tighter
+    # kernels/gaps and shorter label reach so adjacent details do not collapse
+    # into large groups; looser sheets keep the more generous grouping needed to
+    # capture sparse linework and separated labels.
+    profiles = _cv2_detection_profiles(width, height, packed_layout)
+
+    boxes = []
+    for profile in profiles:
+        candidate_profile = dict(profile)
+        merge_dx = candidate_profile.pop("merge_dx")
+        merge_dy = candidate_profile.pop("merge_dy")
+        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+        boxes.extend(_merge_boxes(candidates, dx=merge_dx, dy=merge_dy))
+
+    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
+    boxes = _dedupe_boxes(boxes)
+    return _remove_composite_boxes(boxes)
+
+
 def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     cv2 = _cv2()
     if cv2 is None:
@@ -589,36 +647,23 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     height, width = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
-    )
+    best_results = []
+    for _, thresh in _cv2_threshold_variants(cv2, gray):
+        boxes = _cv2_boxes_from_threshold(cv2, thresh, width, height)
 
-    preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
-    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
-    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
+        if scale < 1.0:
+            inv = 1.0 / scale
+            boxes = [
+                [int(round(x * inv)), int(round(y * inv)), int(round(w * inv)), int(round(h * inv))]
+                for x, y, w, h in boxes
+            ]
 
-    # Multi-scale detection adapts to sheet density. Packed sheets use tighter
-    # kernels/gaps and shorter label reach so adjacent details do not collapse
-    # into large groups; looser sheets keep the more generous grouping needed to
-    # capture sparse linework and separated labels.
-    profiles = _cv2_detection_profiles(width, height, packed_layout)
+        results = _format_results(boxes, orig_width, orig_height, max_boxes)
+        if results:
+            return results
+        best_results = results
 
-    boxes = []
-    for profile in profiles:
-        candidate_profile = dict(profile)
-        merge_dx = candidate_profile.pop("merge_dx")
-        merge_dy = candidate_profile.pop("merge_dy")
-        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
-        boxes.extend(_merge_boxes(candidates, dx=merge_dx, dy=merge_dy))
-    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
-    boxes = _dedupe_boxes(boxes)
-    boxes = _remove_composite_boxes(boxes)
-
-    if scale < 1.0:
-        inv = 1.0 / scale
-        boxes = [[int(round(x * inv)), int(round(y * inv)), int(round(w * inv)), int(round(h * inv))] for x, y, w, h in boxes]
-
-    return _format_results(boxes, orig_width, orig_height, max_boxes)
+    return best_results
 
 
 def _connected_components(mask: np.ndarray) -> list[list[int]]:

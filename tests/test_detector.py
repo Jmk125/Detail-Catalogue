@@ -1,8 +1,10 @@
+import tempfile
+from pathlib import Path
 import unittest
 
 import numpy as np
 
-from app.detector import _cv2, _cv2_candidates, _cv2_candidates_detailed
+from app.detector import _cv2, _cv2_candidates, _cv2_candidates_detailed, detect_candidate_detail_boxes
 
 
 class Cv2CandidateTests(unittest.TestCase):
@@ -32,6 +34,24 @@ class Cv2CandidateTests(unittest.TestCase):
         self.assertGreaterEqual(len(contours), 1)
         self.assertIsInstance(rejected, list)
         self.assertGreaterEqual(len(boxes), 1)
+
+
+    def test_detector_falls_back_for_faint_gray_linework(self):
+        image = np.full((700, 1000, 3), 255, dtype=np.uint8)
+        for idx in range(2):
+            x = 120 + idx * 420
+            y = 140
+            self.cv2.rectangle(image, (x, y), (x + 280, y + 190), (245, 245, 245), thickness=2)
+            for offset in range(30, 160, 35):
+                self.cv2.line(image, (x + 30, y + offset), (x + 250, y + offset), (245, 245, 245), 1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "faint_architect_sheet.png"
+            self.cv2.imwrite(str(image_path), image)
+
+            boxes = detect_candidate_detail_boxes(image_path)
+
+        self.assertGreaterEqual(len(boxes), 2)
 
     def test_candidate_wrapper_unpacks_detailed_result(self):
         thresh = np.zeros((220, 320), dtype=np.uint8)
