@@ -12,6 +12,7 @@ from .ai_tagging import build_ai_prompt_context, get_ai_provider
 from .database import PROJECTS_ROOT, connect, json_loads, row_to_dict, utc_now
 from .detector import detect_candidate_detail_boxes
 from .settings import StorageSettings, get_settings
+from .sheet_number import read_sheet_number_from_pdf_text, read_sheet_number_with_tesseract
 
 
 def project_dir(project_id: str) -> Path:
@@ -393,21 +394,30 @@ def save_thumbnail(crop_path: Path, thumb_path: Path) -> None:
         img.save(thumb_path, format="WEBP", quality=70, optimize=True)
 
 
-def save_sheet_box_crop(project_id: str, page_id: int, page_global_index: int, page_img_path: Path, sheet_box: dict[str, Any]) -> str | None:
-    """Crop the sheet-number box from the page image, OCR it via the AI provider, and return the sheet number."""
+def save_sheet_box_crop(project_id: str, page_id: int, page: Any, page_img_path: Path, sheet_box: dict[str, Any]) -> str | None:
+    """Crop the sheet-number box and read it locally without using the AI tagging provider."""
     x = int(round(sheet_box["x"])); y = int(round(sheet_box["y"])); w = int(round(sheet_box["w"])); h = int(round(sheet_box["h"]))
     with Image.open(page_img_path) as img:
         x0 = max(0, x); y0 = max(0, y); x1 = min(img.width, x + w); y1 = min(img.height, y + h)
         if x1 <= x0 or y1 <= y0:
             return None
         crop = img.crop((x0, y0, x1, y1))
-        crop_rel = f"sheet_crops/page_{page_global_index + 1:04d}_sheetnum.png"
+        crop_rel = f"sheet_crops/page_{page['global_index'] + 1:04d}_sheetnum.png"
         crop_path = project_dir(project_id) / crop_rel
         crop.save(crop_path, format="PNG")
     try:
-        return get_ai_provider().read_sheet_number(crop_path)
+        sheet_number = read_sheet_number_from_pdf_text(
+            project_dir(project_id) / page["storage_path"],
+            int(page["source_page_index"]),
+            sheet_box,
+            int(page["width"] or 0),
+            int(page["height"] or 0),
+            float(page["pdf_width"] or 0),
+            float(page["pdf_height"] or 0),
+        )
     except Exception:
-        return None
+        sheet_number = None
+    return sheet_number or read_sheet_number_with_tesseract(crop_path)
 
 
 def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any]], settings: StorageSettings | None = None, sheet_box: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -415,7 +425,7 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
     with connect() as conn:
         page = conn.execute(
             """
-            SELECT pages.*, source_files.filename, projects.project_name, projects.discipline, dt.name AS design_team
+            SELECT pages.*, source_files.filename, source_files.storage_path, projects.project_name, projects.discipline, dt.name AS design_team
             FROM pages
             JOIN source_files ON source_files.id = pages.source_file_id
             JOIN projects ON projects.id = pages.project_id
@@ -438,7 +448,7 @@ def save_approved_crops(project_id: str, page_id: int, boxes: list[dict[str, Any
 
     sheet_number = None
     if sheet_box:
-        sheet_number = save_sheet_box_crop(project_id, page_id, page["global_index"], page_img_path, sheet_box)
+        sheet_number = save_sheet_box_crop(project_id, page_id, page, page_img_path, sheet_box)
 
     records = []
     crop_ext = settings.extension()
