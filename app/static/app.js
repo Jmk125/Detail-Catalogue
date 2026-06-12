@@ -1115,6 +1115,16 @@ function formatSheetNumberDebug(data) {
     }
   }
   lines.push("");
+  lines.push(`Built-in template OCR available: ${data.template_ocr?.available ? "yes" : "no"}`);
+  lines.push(`Built-in template OCR parsed: ${data.template_ocr?.parsed || "(none)"}`);
+  lines.push(`Built-in template OCR raw: ${data.template_ocr?.raw || "(empty)"}`);
+  if (data.template_ocr?.components?.length) {
+    lines.push("Built-in template OCR components:");
+    for (const item of data.template_ocr.components.slice(0, 30)) {
+      lines.push(`  [${item.x}, ${item.y}, ${item.w}, ${item.h}] ${item.char || "?"} score=${item.score}`);
+    }
+  }
+  lines.push("");
   lines.push(`Tesseract available: ${data.tesseract?.available ? "yes" : "no"}`);
   lines.push(`Tesseract parsed: ${data.tesseract?.parsed || "(none)"}`);
   if (data.tesseract?.stdout) {

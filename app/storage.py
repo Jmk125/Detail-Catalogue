@@ -13,7 +13,7 @@ from .ai_tagging import build_ai_prompt_context, get_ai_provider
 from .database import PROJECTS_ROOT, connect, json_loads, row_to_dict, utc_now
 from .detector import detect_candidate_detail_boxes
 from .settings import StorageSettings, get_settings
-from .sheet_number import debug_sheet_number_read, read_sheet_number_from_pdf_text, read_sheet_number_with_tesseract
+from .sheet_number import debug_sheet_number_read, read_sheet_number_from_pdf_text, read_sheet_number_with_template_ocr, read_sheet_number_with_tesseract
 
 
 def project_dir(project_id: str) -> Path:
@@ -437,7 +437,7 @@ def save_sheet_box_crop(project_id: str, page_id: int, page: Any, page_img_path:
         )
     except Exception:
         sheet_number = None
-    return sheet_number or read_sheet_number_with_tesseract(crop_path)
+    return sheet_number or read_sheet_number_with_tesseract(crop_path) or read_sheet_number_with_template_ocr(crop_path)
 
 
 def _crop_sheet_box_to_temp(page_img_path: Path, sheet_box: dict[str, Any]) -> tuple[Path | None, dict[str, int] | None]:

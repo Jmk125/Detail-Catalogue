@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import fitz
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 DIGIT_RUN = r"\d(?:\s*\d){0,3}"
 SHEET_NUMBER_RE = re.compile(
@@ -190,6 +190,7 @@ def debug_sheet_number_read(
         "clip_pdf_points": _format_rect(clip),
         "pdf_text": {"raw": "", "parsed": None},
         "pdf_words": {"joined": "", "parsed": None, "count": 0, "items": []},
+        "template_ocr": {},
         "tesseract": {},
         "final_sheet_number": None,
         "notes": [],
@@ -214,14 +215,16 @@ def debug_sheet_number_read(
                 debug["notes"].append("No selectable PDF text/words were found inside the red box; this sheet may require OCR.")
         finally:
             doc.close()
+    debug["template_ocr"] = debug_template_ocr(image_path)
     debug["tesseract"] = _run_tesseract_raw(image_path)
     debug["final_sheet_number"] = (
         debug["pdf_text"].get("parsed")
         or debug["pdf_words"].get("parsed")
         or debug["tesseract"].get("parsed")
+        or debug["template_ocr"].get("parsed")
     )
     if not debug["final_sheet_number"]:
-        debug["notes"].append("No sheet number was parsed from PDF text, PDF words, or local Tesseract OCR.")
+        debug["notes"].append("No sheet number was parsed from PDF text, PDF words, local Tesseract OCR, or built-in template OCR.")
     return debug
 
 
@@ -241,6 +244,189 @@ def _preprocess_for_tesseract(image_path: Path) -> Path:
         return tmp_path
     finally:
         image.close()
+
+
+
+_TEMPLATE_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
+_TEMPLATE_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
+]
+
+
+def _cv2_module():
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception:
+        return None, None
+    return cv2, np
+
+
+def _tight_binary_crop(array: Any) -> Any | None:
+    cv2, _ = _cv2_module()
+    if cv2 is None:
+        return None
+    coords = cv2.findNonZero(array)
+    if coords is None:
+        return None
+    x, y, w, h = cv2.boundingRect(coords)
+    return array[y:y + h, x:x + w]
+
+
+def _resize_for_ocr(array: Any, width: int = 48, height: int = 72) -> Any:
+    cv2, np = _cv2_module()
+    if cv2 is None or np is None:
+        return array
+    h, w = array.shape[:2]
+    if h <= 0 or w <= 0:
+        return np.zeros((height, width), dtype=np.uint8)
+    scale = min((width - 6) / w, (height - 6) / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(array, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((height, width), dtype=np.uint8)
+    x0 = (width - new_w) // 2
+    y0 = (height - new_h) // 2
+    canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+    return canvas
+
+
+def _template_font(path: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _build_ocr_templates() -> dict[str, list[Any]]:
+    cv2, np = _cv2_module()
+    if cv2 is None or np is None:
+        return {}
+    templates: dict[str, list[Any]] = {char: [] for char in _TEMPLATE_CHARS}
+    for font_path in _TEMPLATE_FONT_PATHS:
+        for size in (42, 56, 72, 96):
+            font = _template_font(font_path, size)
+            for char in _TEMPLATE_CHARS:
+                img = Image.new("L", (size * 2, size * 2), 255)
+                draw = ImageDraw.Draw(img)
+                bbox = draw.textbbox((0, 0), char, font=font)
+                draw.text((10 - bbox[0], 10 - bbox[1]), char, font=font, fill=0)
+                arr = np.array(img)
+                _, binary = cv2.threshold(arr, 180, 255, cv2.THRESH_BINARY_INV)
+                crop = _tight_binary_crop(binary)
+                if crop is not None:
+                    templates[char].append(_resize_for_ocr(crop))
+    return templates
+
+
+_OCR_TEMPLATES: dict[str, list[Any]] | None = None
+
+
+def _get_ocr_templates() -> dict[str, list[Any]]:
+    global _OCR_TEMPLATES
+    if _OCR_TEMPLATES is None:
+        _OCR_TEMPLATES = _build_ocr_templates()
+    return _OCR_TEMPLATES
+
+
+def _sheet_number_components(image_path: Path) -> list[dict[str, Any]]:
+    cv2, np = _cv2_module()
+    if cv2 is None or np is None:
+        return []
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        return []
+    scale = max(1, int(round(360 / max(1, image.shape[0]))))
+    if scale > 1:
+        image = cv2.resize(image, (image.shape[1] * scale, image.shape[0] * scale), interpolation=cv2.INTER_CUBIC)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    image_area = binary.shape[0] * binary.shape[1]
+    comps: list[dict[str, Any]] = []
+    for label in range(1, count):
+        x, y, w, h, area = stats[label]
+        if area < max(8, image_area * 0.00003):
+            continue
+        if w > binary.shape[1] * 0.95 or h > binary.shape[0] * 0.95:
+            continue
+        comps.append({"x": int(x), "y": int(y), "w": int(w), "h": int(h), "area": int(area), "image": (labels[y:y + h, x:x + w] == label).astype("uint8") * 255})
+    if not comps:
+        return []
+    median_h = sorted(c["h"] for c in comps)[len(comps) // 2]
+    substantial = [c for c in comps if c["h"] >= median_h * 0.35 or c["w"] >= c["h"] * 1.8]
+    if not substantial:
+        substantial = comps
+    y_center = sorted((c["y"] + c["h"] / 2 for c in substantial))[len(substantial) // 2]
+    line = [c for c in substantial if abs((c["y"] + c["h"] / 2) - y_center) <= max(median_h, binary.shape[0] * 0.18)]
+    return sorted(line, key=lambda c: c["x"])
+
+
+def _classify_component(component: dict[str, Any], median_digit_height: float) -> tuple[str | None, float]:
+    cv2, np = _cv2_module()
+    if cv2 is None or np is None:
+        return None, 0.0
+    w = component["w"]
+    h = component["h"]
+    if h <= max(10, median_digit_height * 0.45) and w >= h * 1.5:
+        return "-", 0.95
+    templates = _get_ocr_templates()
+    sample = _resize_for_ocr(component["image"])
+    best_char: str | None = None
+    best_score = -1.0
+    sample_float = (sample > 0).astype("float32")
+    for char, char_templates in templates.items():
+        if char == "-":
+            continue
+        for template in char_templates:
+            template_float = (template > 0).astype("float32")
+            intersection = float((sample_float * template_float).sum())
+            union = float(((sample_float + template_float) > 0).sum()) or 1.0
+            score = intersection / union
+            if score > best_score:
+                best_score = score
+                best_char = char
+    return best_char, best_score
+
+
+def read_sheet_number_with_template_ocr(image_path: Path) -> str | None:
+    """Best-effort built-in OCR for high-contrast sheet numbers when PDF text and Tesseract are unavailable."""
+    components = _sheet_number_components(image_path)
+    if not components:
+        return None
+    digit_like_heights = [c["h"] for c in components if c["h"] > c["w"] * 0.8]
+    heights = digit_like_heights or [c["h"] for c in components]
+    median_h = sorted(heights)[len(heights) // 2]
+    chars: list[str] = []
+    for component in components:
+        char, score = _classify_component(component, float(median_h))
+        if not char:
+            continue
+        if char != "-" and score < 0.18:
+            continue
+        chars.append(char)
+    if not chars:
+        return None
+    return parse_sheet_number_text("".join(chars))
+
+
+def debug_template_ocr(image_path: Path) -> dict[str, Any]:
+    components = _sheet_number_components(image_path)
+    heights = [c["h"] for c in components if c["h"] > c["w"] * 0.8] or [c["h"] for c in components] or [0]
+    median_h = sorted(heights)[len(heights) // 2]
+    items = []
+    chars = []
+    for component in components:
+        char, score = _classify_component(component, float(median_h))
+        if char and (char == "-" or score >= 0.18):
+            chars.append(char)
+        items.append({"x": component["x"], "y": component["y"], "w": component["w"], "h": component["h"], "char": char, "score": round(score, 3)})
+    raw = "".join(chars)
+    return {"available": bool(_cv2_module()[0]), "raw": raw, "parsed": parse_sheet_number_text(raw), "components": items}
 
 
 def read_sheet_number_with_tesseract(image_path: Path) -> str | None:

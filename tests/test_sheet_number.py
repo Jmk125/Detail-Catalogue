@@ -3,9 +3,9 @@ import unittest
 from pathlib import Path
 
 import fitz
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
-from app.sheet_number import debug_sheet_number_read, parse_sheet_number_text, read_sheet_number_from_pdf_text
+from app.sheet_number import debug_sheet_number_read, parse_sheet_number_text, read_sheet_number_from_pdf_text, read_sheet_number_with_template_ocr
 
 
 class SheetNumberReaderTests(unittest.TestCase):
@@ -70,6 +70,17 @@ class SheetNumberReaderTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "03-110")
+
+    def test_template_ocr_reads_high_contrast_raster_sheet_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            crop_path = Path(tmp) / "raster_sheet_number.png"
+            image = Image.new("RGB", (500, 160), "white")
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 100)
+            draw.text((20, 25), "03-110", font=font, fill="black")
+            image.save(crop_path)
+
+            self.assertEqual(read_sheet_number_with_template_ocr(crop_path), "03-110")
 
     def test_debug_sheet_number_read_reports_pdf_text_and_final_value(self):
         with tempfile.TemporaryDirectory() as tmp:
