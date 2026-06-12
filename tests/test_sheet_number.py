@@ -14,13 +14,17 @@ class SheetNumberReaderTests(unittest.TestCase):
     def test_parse_keeps_dotted_structural_number(self):
         self.assertEqual(parse_sheet_number_text("SHEET NO S2.01"), "S2.01")
 
+    def test_parse_keeps_full_numeric_hyphenated_sheet_number(self):
+        self.assertEqual(parse_sheet_number_text("07-005"), "07-005")
+        self.assertEqual(parse_sheet_number_text("SHEET NUMBER 07 - 005"), "07-005")
+
     def test_read_sheet_number_from_pdf_text_uses_red_box_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = Path(tmp) / "sheet.pdf"
             doc = fitz.open()
             page = doc.new_page(width=612, height=792)
             page.insert_text((470, 700), "SHEET NUMBER", fontsize=8)
-            page.insert_text((500, 724), "A-501", fontsize=20)
+            page.insert_text((500, 724), "07-005", fontsize=20)
             doc.save(pdf_path)
             doc.close()
 
@@ -36,7 +40,7 @@ class SheetNumberReaderTests(unittest.TestCase):
                 pdf_height=792,
             )
 
-        self.assertEqual(result, "A-501")
+        self.assertEqual(result, "07-005")
 
 
 if __name__ == "__main__":

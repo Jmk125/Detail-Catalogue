@@ -11,7 +11,12 @@ import fitz
 from PIL import Image, ImageOps
 
 SHEET_NUMBER_RE = re.compile(
-    r"(?<![A-Z0-9])(?:[A-Z]{1,4}\s*[-_.]?\s*)?\d{1,4}(?:\.\d{1,3})?[A-Z]?(?![A-Z0-9])",
+    r"(?<![A-Z0-9])"
+    r"(?:[A-Z]{1,4}\s*[-_.]?\s*)?"
+    r"\d{1,4}"
+    r"(?:(?:\s*[-–—−_]\s*|\.)\d{1,4}){0,3}"
+    r"[A-Z]?"
+    r"(?![A-Z0-9])",
     re.IGNORECASE,
 )
 BARE_NUMBER_RE = re.compile(r"^\d{1,4}(?:\.\d{1,3})?[A-Z]?$", re.IGNORECASE)
@@ -23,6 +28,7 @@ def normalize_sheet_number(value: str | None) -> str | None:
         return None
     text = value.strip().upper()
     text = re.sub(r"^[^A-Z0-9]+|[^A-Z0-9]+$", "", text)
+    text = re.sub(r"[–—−]", "-", text)
     text = re.sub(r"\s+", "", text)
     text = text.replace("_", "-")
     text = re.sub(r"-{2,}", "-", text)
@@ -38,6 +44,8 @@ def _candidate_score(candidate: str, source_text: str, start: int) -> tuple[int,
         score += 50
     if re.search(r"[-.]", normalized):
         score += 10
+    if re.match(r"^\d{1,4}-\d{1,4}[A-Z]?$", normalized):
+        score += 25
     if re.match(r"^[A-Z]{1,4}-?\d", normalized):
         score += 20
     if BARE_NUMBER_RE.match(normalized):
