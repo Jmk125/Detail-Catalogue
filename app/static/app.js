@@ -14,6 +14,8 @@ let drawState = null;
 let deletedBoxPatterns = [];
 let sheetBox = null;
 let sheetDragState = null;
+let sheetNumberPreviewTimer = null;
+let sheetNumberPreviewRequestId = 0;
 let compareMode = false;
 const compareDetailIds = new Set();
 const compareDetails = new Map();
@@ -58,6 +60,7 @@ $("addBoxBtn").addEventListener("click", addBox);
 $("redetectBtn").addEventListener("click", redetectSheet);
 $("deleteBtn").addEventListener("click", deleteSelected);
 $("approveBtn").addEventListener("click", approveSheet);
+$("sheetNumberDebugBtn").addEventListener("click", debugSheetNumber);
 $("skipBtn").addEventListener("click", skipSheet);
 $("downloadBtn").addEventListener("click", downloadProject);
 $("refreshLibraryBtn").addEventListener("click", loadLibrary);
@@ -408,6 +411,8 @@ function resetReviewWorkspace() {
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
   $("detailsList").innerHTML = "";
+  setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
+  clearSheetNumberDebug();
   $("sheetInfo").textContent = "";
 }
 
@@ -597,6 +602,8 @@ function showProcessingNext(status = manifest?.processing_status) {
   $("sheetImage").removeAttribute("src");
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
+  setSheetNumberPreview("pending", "Waiting for the next ready sheet...");
+  clearSheetNumberDebug();
   const pagesReady = status?.pages_ready || 0;
   const pagesProcessing = status?.pages_processing || 0;
   const remainingReviewable = pagesReady + pagesProcessing;
@@ -630,6 +637,8 @@ function loadPage() {
     sheetBox = clampSheetBox(page.sheet_box || manifest.last_sheet_box || defaultSheetBox(img), img);
     fitToView();
     renderBoxes();
+    clearSheetNumberDebug();
+    scheduleSheetNumberPreview(50);
   };
   img.onerror = () => {
     loadedPageId = null;
@@ -891,6 +900,132 @@ function stopSheetDrag() {
   sheetDragState = null;
   document.removeEventListener("mousemove", onSheetDrag);
   document.removeEventListener("mouseup", stopSheetDrag);
+  scheduleSheetNumberPreview(150);
+}
+
+function currentReadyPage() {
+  if (!manifest) return null;
+  return manifest.pages.find(p => p.page_index === pageIndex && p.status === "ready") || null;
+}
+
+function setSheetNumberPreview(state, text) {
+  const el = $("sheetNumberPreview");
+  if (!el) return;
+  el.className = `sheet-number-preview ${state}`;
+  el.textContent = text;
+}
+
+function scheduleSheetNumberPreview(delay = 250) {
+  clearTimeout(sheetNumberPreviewTimer);
+  const page = currentReadyPage();
+  if (!projectId || !page || !sheetBox) {
+    setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
+    return;
+  }
+  setSheetNumberPreview("loading", "Reading sheet number from the red box...");
+  sheetNumberPreviewTimer = setTimeout(() => previewSheetNumber(page), delay);
+}
+
+function clearSheetNumberDebug() {
+  const el = $("sheetNumberDebug");
+  if (!el) return;
+  el.classList.add("hidden");
+  el.textContent = "";
+}
+
+function formatSheetNumberDebug(data) {
+  const lines = [];
+  lines.push(`Final parsed sheet #: ${data.final_sheet_number || "(none)"}`);
+  if (data.source_filename) lines.push(`Source: ${data.source_filename}, page ${data.page_number}`);
+  lines.push(`Image box: ${JSON.stringify(data.sheet_box_image_pixels || {})}`);
+  lines.push(`PDF clip: ${JSON.stringify(data.clip_pdf_points || null)}`);
+  lines.push("");
+  lines.push(`PDF text parsed: ${data.pdf_text?.parsed || "(none)"}`);
+  lines.push("PDF text raw:");
+  lines.push(data.pdf_text?.raw || "(empty)");
+  lines.push("");
+  lines.push(`PDF words parsed: ${data.pdf_words?.parsed || "(none)"} from ${data.pdf_words?.count || 0} words`);
+  lines.push(`PDF words joined: ${data.pdf_words?.joined || "(empty)"}`);
+  if (data.pdf_words?.items?.length) {
+    lines.push("PDF word boxes:");
+    for (const word of data.pdf_words.items.slice(0, 30)) {
+      lines.push(`  [${word.x0}, ${word.y0}, ${word.x1}, ${word.y1}] ${word.text}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Built-in template OCR available: ${data.template_ocr?.available ? "yes" : "no"}`);
+  lines.push(`Built-in template OCR parsed: ${data.template_ocr?.parsed || "(none)"}`);
+  lines.push(`Built-in template OCR raw: ${data.template_ocr?.raw || "(empty)"}`);
+  if (data.template_ocr?.components?.length) {
+    lines.push("Built-in template OCR components:");
+    for (const item of data.template_ocr.components.slice(0, 30)) {
+      lines.push(`  [${item.x}, ${item.y}, ${item.w}, ${item.h}] ${item.char || "?"} score=${item.score}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Tesseract available: ${data.tesseract?.available ? "yes" : "no"}`);
+  lines.push(`Tesseract parsed: ${data.tesseract?.parsed || "(none)"}`);
+  if (data.tesseract?.stdout) {
+    lines.push("Tesseract stdout:");
+    lines.push(data.tesseract.stdout);
+  }
+  if (data.tesseract?.stderr) {
+    lines.push("Tesseract stderr:");
+    lines.push(data.tesseract.stderr);
+  }
+  if (data.notes?.length) {
+    lines.push("");
+    lines.push("Notes:");
+    data.notes.forEach(note => lines.push(`- ${note}`));
+  }
+  return lines.join("\n");
+}
+
+async function debugSheetNumber() {
+  const page = currentReadyPage();
+  const el = $("sheetNumberDebug");
+  if (!page || !sheetBox) {
+    setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = "Collecting sheet-number diagnostics...";
+  try {
+    const res = await fetch("/api/debug-sheet-number", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ project_id: projectId, page_id: page.id, sheet_box: sheetBox })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    el.textContent = formatSheetNumberDebug(data);
+  } catch (err) {
+    console.error(err);
+    el.textContent = `Could not collect sheet-number diagnostics.\n${err}`;
+  }
+}
+
+async function previewSheetNumber(page) {
+  const requestId = ++sheetNumberPreviewRequestId;
+  try {
+    const res = await fetch("/api/preview-sheet-number", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ project_id: projectId, page_id: page.id, sheet_box: sheetBox })
+    });
+    if (requestId !== sheetNumberPreviewRequestId) return;
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (data.sheet_number) {
+      setSheetNumberPreview("ok", `Read: ${data.sheet_number}`);
+    } else {
+      setSheetNumberPreview("empty", "No sheet number read yet. Adjust the red box to include the full sheet number.");
+    }
+  } catch (err) {
+    if (requestId !== sheetNumberPreviewRequestId) return;
+    console.error(err);
+    setSheetNumberPreview("error", "Could not preview sheet number for this box.");
+  }
 }
 
 function renderBoxList() {

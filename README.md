@@ -35,6 +35,7 @@ Approved detail crops and thumbnails are the permanent visual artifacts. Full re
 - Render/detect pages incrementally in a background task so review can start as soon as the first sheet is ready.
 - Review crop boxes with the existing zoom, pan, move, edge/corner resize, delete-key, and overlap-merge behavior.
 - Approve or skip one sheet at a time; approval saves crops immediately and queues durable AI jobs.
+- Sheet-number capture from the red review box is local and quota-free: the app first reads selectable PDF text in that box and can fall back to built-in high-contrast template OCR and then a local `tesseract` command if installed. The review sidebar previews the currently read sheet number before approval, and its debug button shows raw PDF text, PDF words, OCR output, and parser results for troubleshooting discipline-specific sheets.
 - Browse/search the local detail library by project, design team, discipline, CSI, tag, and free text.
 
 
@@ -54,7 +55,7 @@ If `AI_TAGGING_PROVIDER=stub`, the app intentionally uses placeholder metadata e
 
 ## AI provider seam
 
-`app/ai_tagging.py` defines an `AITaggingProvider` interface, a stub provider, and an OpenAI Responses API provider. The OpenAI provider sends the prepared prompt context (project name, design team, source PDF filename, page number, known discipline, and crop image path) with the crop image and stores structured metadata.
+`app/ai_tagging.py` defines an `AITaggingProvider` interface, a stub provider, and an OpenAI Responses API provider. The OpenAI provider sends the prepared prompt context (project name, design team, source PDF filename, page number, known discipline, and crop image path) with the crop image and stores structured metadata. Sheet-number capture from the red box is intentionally outside this provider path, so approving sheets can continue to populate `sheet_number` even when AI tagging is disabled, delayed, or quota-limited.
 
 ## Reverse proxy / future Node direction
 
