@@ -349,6 +349,25 @@ aside {
   color: #8a1f1f;
 }
 
+.sheet-duplicate-notice {
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  padding: 10px;
+  margin: -6px 0 14px;
+  background: #fff7ed;
+  color: #7c2d12;
+  font-size: 13px;
+}
+
+.sheet-duplicate-notice ul {
+  margin: 6px 0 0 18px;
+  padding: 0;
+}
+
+.sheet-duplicate-notice span {
+  color: #9a3412;
+}
+
 .sheet-number-override {
   display: block;
   margin: 8px 0;
@@ -674,7 +693,7 @@ aside {
 }
 
 .library-filters {
-  grid-template-columns: minmax(260px, 2fr) repeat(5, minmax(130px, 1fr)) auto;
+  grid-template-columns: minmax(240px, 2fr) repeat(6, minmax(120px, 1fr)) auto;
   align-items: center;
   background: var(--panel-soft);
   border: 1px solid var(--border);

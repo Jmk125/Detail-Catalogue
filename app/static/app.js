@@ -16,6 +16,7 @@ let sheetBox = null;
 let sheetDragState = null;
 let sheetNumberPreviewTimer = null;
 let sheetNumberPreviewRequestId = 0;
+let sheetDuplicateTimer = null;
 let compareMode = false;
 const compareDetailIds = new Set();
 const compareDetails = new Map();
@@ -83,7 +84,7 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 }
 
-for (const id of ["librarySearch", "filterTag", "filterCsi", "filterBookmarked"]) {
+for (const id of ["librarySearch", "filterSheet", "filterTag", "filterCsi", "filterBookmarked"]) {
   $(id).addEventListener("input", debounce(loadLibrary, 250));
   $(id).addEventListener("change", loadLibrary);
 }
@@ -575,6 +576,7 @@ function resetReviewWorkspace() {
   const override = $("sheetNumberOverride");
   if (override) override.value = "";
   setSheetNumberPreview("pending", "Move the red Sheet # box over the sheet number to preview it here.");
+  renderExistingSheetNotice(null);
   clearSheetNumberDebug();
   $("sheetInfo").textContent = "";
 }
@@ -767,6 +769,7 @@ function showProcessingNext(status = manifest?.processing_status) {
   $("boxLayer").innerHTML = "";
   $("boxList").innerHTML = "";
   setSheetNumberPreview("pending", "Waiting for the next ready sheet...");
+  renderExistingSheetNotice(null);
   clearSheetNumberDebug();
   const pagesReady = status?.pages_ready || 0;
   const pagesProcessing = status?.pages_processing || 0;
@@ -1082,6 +1085,45 @@ function setSheetNumberPreview(state, text) {
   el.textContent = text;
 }
 
+function renderExistingSheetNotice(existing) {
+  const el = $("sheetDuplicateNotice");
+  if (!el) return;
+  const count = existing?.count || 0;
+  if (!count) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  const sheet = existing.sheet_number || "this sheet";
+  const details = existing.details || [];
+  const examples = details.slice(0, 3).map(d => {
+    const label = d.detail_number || d.detail_title || d.id;
+    const page = d.page_number ? `page ${d.page_number}` : "saved page";
+    return `<li>${escapeHtml(label)} <span>${escapeHtml(page)}</span></li>`;
+  }).join("");
+  const more = count > details.length ? `<li>${count - details.length} more saved detail${count - details.length === 1 ? "" : "s"}</li>` : "";
+  el.classList.remove("hidden");
+  el.innerHTML = `<strong>Already saved:</strong> ${count} detail${count === 1 ? "" : "s"} from sheet ${escapeHtml(sheet)} on this project.${examples || more ? `<ul>${examples}${more}</ul>` : ""}`;
+}
+
+async function checkExistingSheetDetails(sheetNumber, page) {
+  const normalized = (sheetNumber || "").trim();
+  if (!projectId || !normalized) {
+    renderExistingSheetNotice(null);
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ sheet_number: normalized });
+    if (page?.id) params.set("exclude_page_id", page.id);
+    const res = await fetch(`/api/projects/${projectId}/sheet-details?${params.toString()}`);
+    if (!res.ok) throw new Error(await res.text());
+    renderExistingSheetNotice(await res.json());
+  } catch (err) {
+    console.error(err);
+    renderExistingSheetNotice(null);
+  }
+}
+
 function currentSheetNumberOverride() {
   const input = $("sheetNumberOverride");
   return input ? input.value.trim() : "";
@@ -1089,9 +1131,13 @@ function currentSheetNumberOverride() {
 
 function updateSheetNumberOverridePreview() {
   const value = currentSheetNumberOverride();
+  clearTimeout(sheetDuplicateTimer);
   if (value) {
     setSheetNumberPreview("ok", `Will save manual sheet #: ${value}`);
+    const page = currentReadyPage();
+    sheetDuplicateTimer = setTimeout(() => checkExistingSheetDetails(value, page), 200);
   } else {
+    renderExistingSheetNotice(null);
     scheduleSheetNumberPreview(150);
   }
 }
@@ -1102,6 +1148,7 @@ function scheduleSheetNumberPreview(delay = 250) {
   const override = currentSheetNumberOverride();
   if (override) {
     setSheetNumberPreview("ok", `Will save manual sheet #: ${override}`);
+    checkExistingSheetDetails(override, page);
     return;
   }
   if (!projectId || !page || !sheetBox) {
@@ -1204,8 +1251,10 @@ async function previewSheetNumber(page) {
     const data = await res.json();
     if (data.sheet_number) {
       setSheetNumberPreview("ok", `Read: ${data.sheet_number}`);
+      renderExistingSheetNotice(data.existing_sheet);
     } else {
       setSheetNumberPreview("empty", "No sheet number read yet. Adjust the red box to include the full sheet number.");
+      renderExistingSheetNotice(null);
     }
   } catch (err) {
     if (requestId !== sheetNumberPreviewRequestId) return;
@@ -1533,6 +1582,7 @@ function renderComparison() {
 function detailCard(d, compact = false, list = false, comparing = false) {
   const card = document.createElement("div");
   const detailId = String(d.id);
+  card.dataset.detailId = detailId;
   card.className = "detail-card" + (d.bookmarked ? " bookmarked" : "") + (list ? " list-card" : "") + (compareDetailIds.has(detailId) ? " compared" : "") + (comparing ? " compare-card" : "");
   const hasNote = Boolean((d.notes || "").trim());
   const noteBadge = hasNote ? `<button class="note-badge" type="button" aria-label="View note" title="View note">📝</button>` : "";
@@ -1903,6 +1953,7 @@ async function loadLibrary() {
     disciplines: selectedCheckboxValues("filterDisciplines").join(","),
     tag: $("filterTag").value || "",
     csi: $("filterCsi").value || "",
+    sheet: $("filterSheet").value || "",
     bookmarked: $("filterBookmarked").checked ? "1" : ""
   });
   const res = await fetch(`/api/library/search?${params.toString()}`);
