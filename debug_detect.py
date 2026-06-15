@@ -134,6 +134,7 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     final_results = []
+    selected_pass = "none"
     for threshold_name, thresh in _cv2_threshold_variants(cv2, gray):
         print(f"\nThreshold pass: {threshold_name}")
         print(f"Foreground pixels: {cv2.countNonZero(thresh)}")
@@ -200,11 +201,11 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
         original_boxes = [_scale_box(b, scale) for b in boxes]
         results = _format_results(original_boxes, orig_width, orig_height, 80)
         print(f"Final app-style results after area filter (0.15%-62%): {len(results)}")
-        if results:
+        if len(results) > len(final_results):
             final_results = results
-            print(f"Selected threshold pass: {threshold_name}")
-            break
+            selected_pass = threshold_name
 
+    print(f"Selected threshold pass: {selected_pass} ({len(final_results)} boxes)")
     print(json.dumps(final_results, indent=2))
 
     if overlay_path is not False:

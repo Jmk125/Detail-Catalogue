@@ -57,7 +57,18 @@ def process_project_pages(project_id: str) -> None:
             output_stem = f"page_{page['global_index'] + 1:04d}"
             info = render_pdf_page(pdf_path, pdir / "pages", page["source_page_index"], output_stem, zoom=settings.render_zoom)
             image_rel = f"pages/{Path(info['image_path']).name}"
-            boxes = detect_candidate_detail_boxes(pdir / image_rel)
+            image_path = pdir / image_rel
+            print(
+                f"[detail-detect] project={project_id} page={page['global_index'] + 1} "
+                f"image={image_rel} starting",
+                flush=True,
+            )
+            boxes = detect_candidate_detail_boxes(image_path)
+            print(
+                f"[detail-detect] project={project_id} page={page['global_index'] + 1} "
+                f"boxes={len(boxes)} image={image_rel}",
+                flush=True,
+            )
             update_page_ready(page["id"], image_rel, info, boxes)
         except Exception as exc:  # durable per-page failure lets rest of batch continue
             logger.exception("Failed to process project %s page %s", project_id, page["id"])

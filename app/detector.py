@@ -680,20 +680,33 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     best_results = []
+    best_score = -1
     for _, thresh in _cv2_threshold_variants(cv2, gray):
-        boxes = _cv2_boxes_from_threshold(cv2, thresh, width, height, include_sparse_fallback=True)
+        for include_sparse_fallback in (False, True):
+            boxes = _cv2_boxes_from_threshold(
+                cv2,
+                thresh,
+                width,
+                height,
+                include_sparse_fallback=include_sparse_fallback,
+            )
 
-        if scale < 1.0:
-            inv = 1.0 / scale
-            boxes = [
-                [int(round(x * inv)), int(round(y * inv)), int(round(w * inv)), int(round(h * inv))]
-                for x, y, w, h in boxes
-            ]
+            if scale < 1.0:
+                inv = 1.0 / scale
+                boxes = [
+                    [int(round(x * inv)), int(round(y * inv)), int(round(w * inv)), int(round(h * inv))]
+                    for x, y, w, h in boxes
+                ]
 
-        results = _format_results(boxes, orig_width, orig_height, max_boxes)
-        if results:
-            return results
-        best_results = results
+            results = _format_results(boxes, orig_width, orig_height, max_boxes)
+            # Do not stop at the first non-empty fallback. Some difficult sheets
+            # produce one or two incidental boxes on a conservative pass, while a
+            # later threshold/profile finds the actual detail set. Score every
+            # pass and keep the richest candidate set.
+            score = len(results)
+            if score > best_score:
+                best_score = score
+                best_results = results
 
     return best_results
 
