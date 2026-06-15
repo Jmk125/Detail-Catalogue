@@ -604,7 +604,37 @@ def _cv2_candidates(
     return boxes
 
 
-def _cv2_boxes_from_threshold(cv2, thresh, width, height):
+def _cv2_sparse_fallback_profiles(width, height):
+    """Profiles for sparse, unboxed details with long low-height linework."""
+    return (
+        {
+            "line_kernel": 65,
+            "text_kernel": (95, 18),
+            "dilate_kernel": 28,
+            "iterations": 2,
+            "min_area_ratio": 0.00008,
+            "max_area_ratio": 0.62,
+            "max_aspect": 42,
+            "min_aspect": 0.02,
+            "merge_dx": max(8, int(width * 0.012)),
+            "merge_dy": max(8, int(height * 0.018)),
+        },
+        {
+            "line_kernel": 35,
+            "text_kernel": (70, 14),
+            "dilate_kernel": 18,
+            "iterations": 2,
+            "min_area_ratio": 0.00006,
+            "max_area_ratio": 0.52,
+            "max_aspect": 48,
+            "min_aspect": 0.02,
+            "merge_dx": max(6, int(width * 0.010)),
+            "merge_dy": max(6, int(height * 0.014)),
+        },
+    )
+
+
+def _cv2_boxes_from_threshold(cv2, thresh, width, height, *, include_sparse_fallback=False):
     preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
     preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
     packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
@@ -613,7 +643,9 @@ def _cv2_boxes_from_threshold(cv2, thresh, width, height):
     # kernels/gaps and shorter label reach so adjacent details do not collapse
     # into large groups; looser sheets keep the more generous grouping needed to
     # capture sparse linework and separated labels.
-    profiles = _cv2_detection_profiles(width, height, packed_layout)
+    profiles = list(_cv2_detection_profiles(width, height, packed_layout))
+    if include_sparse_fallback and not packed_layout:
+        profiles.extend(_cv2_sparse_fallback_profiles(width, height))
 
     boxes = []
     for profile in profiles:
@@ -649,7 +681,7 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
 
     best_results = []
     for _, thresh in _cv2_threshold_variants(cv2, gray):
-        boxes = _cv2_boxes_from_threshold(cv2, thresh, width, height)
+        boxes = _cv2_boxes_from_threshold(cv2, thresh, width, height, include_sparse_fallback=True)
 
         if scale < 1.0:
             inv = 1.0 / scale

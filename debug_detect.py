@@ -14,9 +14,10 @@ from pathlib import Path
 import cv2
 
 from app.detector import (
-    _cv2_candidates,
+    _cv2_candidates_detailed,
     _cv2_detection_profiles,
     _cv2_preview_candidates,
+    _cv2_sparse_fallback_profiles,
     _cv2_threshold_variants,
     _packed_layout_metrics,
     _merge_boxes,
@@ -142,10 +143,15 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
         layout_metrics = _packed_layout_metrics(preview_boxes, width, height, raw_count=len(preview_candidates))
         packed_layout = layout_metrics["packed_layout"]
         mode = "packed" if packed_layout else "loose"
-        profiles = tuple(
+        profiles = [
             (f"{mode}_{idx}", profile)
             for idx, profile in enumerate(_cv2_detection_profiles(width, height, packed_layout), start=1)
-        )
+        ]
+        if not packed_layout:
+            profiles.extend(
+                (f"sparse_{idx}", profile)
+                for idx, profile in enumerate(_cv2_sparse_fallback_profiles(width, height), start=1)
+            )
         print(f"Preview raw kept: {len(preview_candidates)}")
         print(f"Preview candidates after merge: {len(preview_boxes)}")
         print(
@@ -164,9 +170,15 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
             candidate_profile = dict(profile)
             merge_dx = candidate_profile.pop("merge_dx")
             merge_dy = candidate_profile.pop("merge_dy")
-            candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
+            candidates, raw_contours, rejected = _cv2_candidates_detailed(cv2, thresh, width, height, **candidate_profile)
             merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
-            print(f"{name.title()} profile candidates: {len(candidates)}")
+            rejected_counts = {}
+            for item in rejected:
+                rejected_counts[item["reason"]] = rejected_counts.get(item["reason"], 0) + 1
+            rejected_text = ", ".join(f"{reason}={count}" for reason, count in sorted(rejected_counts.items()))
+            rejected_suffix = f"; rejected {rejected_text}" if rejected_text else ""
+            print(f"{name.title()} raw contours: {len(raw_contours)}")
+            print(f"{name.title()} profile candidates: {len(candidates)}{rejected_suffix}")
             print(f"After merge - {name}: {len(merged)}")
             for b in merged:
                 area_pct = (b[2] * b[3]) / sheet_area * 100

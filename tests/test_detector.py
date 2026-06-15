@@ -53,6 +53,24 @@ class Cv2CandidateTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(boxes), 2)
 
+
+    def test_detector_falls_back_for_sparse_wide_unboxed_linework(self):
+        image = np.full((900, 1400, 3), 255, dtype=np.uint8)
+        for y in (120, 380):
+            for x in (90, 760):
+                self.cv2.line(image, (x, y), (x + 520, y), (0, 0, 0), 1)
+                self.cv2.line(image, (x, y + 85), (x + 520, y + 85), (0, 0, 0), 1)
+                for offset in range(30, 500, 70):
+                    self.cv2.line(image, (x + offset, y + 12), (x + offset + 30, y + 72), (0, 0, 0), 1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "sparse_unboxed_sheet.png"
+            self.cv2.imwrite(str(image_path), image)
+
+            boxes = detect_candidate_detail_boxes(image_path)
+
+        self.assertGreaterEqual(len(boxes), 4)
+
     def test_candidate_wrapper_unpacks_detailed_result(self):
         thresh = np.zeros((220, 320), dtype=np.uint8)
         self.cv2.rectangle(thresh, (40, 50), (180, 130), 255, thickness=2)
