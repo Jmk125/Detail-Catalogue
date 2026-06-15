@@ -14,9 +14,11 @@ from pathlib import Path
 import cv2
 
 from app.detector import (
-    _cv2_candidates,
+    _cv2_candidates_detailed,
     _cv2_detection_profiles,
     _cv2_preview_candidates,
+    _cv2_sparse_fallback_profiles,
+    _cv2_threshold_variants,
     _packed_layout_metrics,
     _merge_boxes,
     _merge_labels_under_details,
@@ -130,62 +132,81 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
     print(f"Production scale: {scale:.6f}" if scale < 1.0 else "Production scale: none")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 15
-    )
 
-    preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
-    preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
-    layout_metrics = _packed_layout_metrics(preview_boxes, width, height, raw_count=len(preview_candidates))
-    packed_layout = layout_metrics["packed_layout"]
-    mode = "packed" if packed_layout else "loose"
-    profiles = tuple(
-        (f"{mode}_{idx}", profile)
-        for idx, profile in enumerate(_cv2_detection_profiles(width, height, packed_layout), start=1)
-    )
-    print(f"Preview raw kept: {len(preview_candidates)}")
-    print(f"Preview candidates after merge: {len(preview_boxes)}")
-    print(
-        "Packed metrics: "
-        f"occupied_cells={layout_metrics['occupied_cells']}, "
-        f"median_nearest={layout_metrics['median_nearest']:.3f}, "
-        f"median_area={layout_metrics['median_area'] * 100:.2f}%, "
-        f"broad_grid={layout_metrics['broad_grid']}, "
-        f"very_many_close={layout_metrics['very_many_close_clusters']}, "
-        f"many_raw={layout_metrics['many_raw_clusters']}"
-    )
-    print(f"Packed layout: {packed_layout}")
+    final_results = []
+    selected_pass = "none"
+    for threshold_name, thresh in _cv2_threshold_variants(cv2, gray):
+        print(f"\nThreshold pass: {threshold_name}")
+        print(f"Foreground pixels: {cv2.countNonZero(thresh)}")
 
-    boxes = []
-    for name, profile in profiles:
-        candidate_profile = dict(profile)
-        merge_dx = candidate_profile.pop("merge_dx")
-        merge_dy = candidate_profile.pop("merge_dy")
-        candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
-        merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
-        print(f"{name.title()} profile candidates: {len(candidates)}")
-        print(f"After merge - {name}: {len(merged)}")
-        for b in merged:
+        preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
+        preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
+        layout_metrics = _packed_layout_metrics(preview_boxes, width, height, raw_count=len(preview_candidates))
+        packed_layout = layout_metrics["packed_layout"]
+        mode = "packed" if packed_layout else "loose"
+        profiles = [
+            (f"{mode}_{idx}", profile)
+            for idx, profile in enumerate(_cv2_detection_profiles(width, height, packed_layout), start=1)
+        ]
+        if not packed_layout:
+            profiles.extend(
+                (f"sparse_{idx}", profile)
+                for idx, profile in enumerate(_cv2_sparse_fallback_profiles(width, height), start=1)
+            )
+        print(f"Preview raw kept: {len(preview_candidates)}")
+        print(f"Preview candidates after merge: {len(preview_boxes)}")
+        print(
+            "Packed metrics: "
+            f"occupied_cells={layout_metrics['occupied_cells']}, "
+            f"median_nearest={layout_metrics['median_nearest']:.3f}, "
+            f"median_area={layout_metrics['median_area'] * 100:.2f}%, "
+            f"broad_grid={layout_metrics['broad_grid']}, "
+            f"very_many_close={layout_metrics['very_many_close_clusters']}, "
+            f"many_raw={layout_metrics['many_raw_clusters']}"
+        )
+        print(f"Packed layout: {packed_layout}")
+
+        boxes = []
+        for name, profile in profiles:
+            candidate_profile = dict(profile)
+            merge_dx = candidate_profile.pop("merge_dx")
+            merge_dy = candidate_profile.pop("merge_dy")
+            candidates, raw_contours, rejected = _cv2_candidates_detailed(cv2, thresh, width, height, **candidate_profile)
+            merged = _merge_boxes(candidates, dx=merge_dx, dy=merge_dy)
+            rejected_counts = {}
+            for item in rejected:
+                rejected_counts[item["reason"]] = rejected_counts.get(item["reason"], 0) + 1
+            rejected_text = ", ".join(f"{reason}={count}" for reason, count in sorted(rejected_counts.items()))
+            rejected_suffix = f"; rejected {rejected_text}" if rejected_text else ""
+            print(f"{name.title()} raw contours: {len(raw_contours)}")
+            print(f"{name.title()} profile candidates: {len(candidates)}{rejected_suffix}")
+            print(f"After merge - {name}: {len(merged)}")
+            for b in merged:
+                area_pct = (b[2] * b[3]) / sheet_area * 100
+                print(f"  {name:<6} box {b}  area%={area_pct:.1f}")
+            boxes.extend(merged)
+        boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
+        print(f"After label-merge: {len(boxes)}")
+
+        boxes = _dedupe_boxes(boxes)
+        print(f"After dedupe: {len(boxes)}")
+
+        boxes = _remove_composite_boxes(boxes)
+        print(f"After composite suppression: {len(boxes)}")
+        for b in boxes:
             area_pct = (b[2] * b[3]) / sheet_area * 100
-            print(f"  {name:<6} box {b}  area%={area_pct:.1f}")
-        boxes.extend(merged)
-    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
-    print(f"After label-merge: {len(boxes)}")
+            original_b = _scale_box(b, scale)
+            print(f"  box {b}  original={original_b}  area%={area_pct:.2f}")
 
-    boxes = _dedupe_boxes(boxes)
-    print(f"After dedupe: {len(boxes)}")
+        original_boxes = [_scale_box(b, scale) for b in boxes]
+        results = _format_results(original_boxes, orig_width, orig_height, 80)
+        print(f"Final app-style results after area filter (0.15%-62%): {len(results)}")
+        if len(results) > len(final_results):
+            final_results = results
+            selected_pass = threshold_name
 
-    boxes = _remove_composite_boxes(boxes)
-    print(f"After composite suppression: {len(boxes)}")
-    for b in boxes:
-        area_pct = (b[2] * b[3]) / sheet_area * 100
-        original_b = _scale_box(b, scale)
-        print(f"  box {b}  original={original_b}  area%={area_pct:.2f}")
-
-    original_boxes = [_scale_box(b, scale) for b in boxes]
-    results = _format_results(original_boxes, orig_width, orig_height, 80)
-    print(f"Final app-style results after area filter (0.15%-62%): {len(results)}")
-    print(json.dumps(results, indent=2))
+    print(f"Selected threshold pass: {selected_pass} ({len(final_results)} boxes)")
+    print(json.dumps(final_results, indent=2))
 
     if overlay_path is not False:
         if overlay_path is None:
