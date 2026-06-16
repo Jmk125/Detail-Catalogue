@@ -99,6 +99,42 @@ def _build_connected_unboxed_pdf(path: Path) -> tuple[int, int]:
     return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
 
 
+def _build_numbered_grid_pdf(path: Path) -> tuple[int, int]:
+    """A grid of unboxed details, each with a graphic and a bottom-left circled
+    number + title (the common real-sheet layout, e.g. A530). Exercises the
+    detail-number grid strategy."""
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    cols, rows = 4, 3  # 12 numbered details
+    gx, gy = 40, 70
+    w = (PAGE_W - gx * (cols + 1)) / cols
+    h = (PAGE_H - 160 - gy * (rows + 1)) / rows
+    # Linework spanning the whole sheet (dimension/grid lines) connects the
+    # details so proximity clustering collapses -- the grid strategy must win.
+    for yy in range(80, PAGE_H - 80, 60):
+        page.draw_line(fitz.Point(40, yy), fitz.Point(PAGE_W - 40, yy), width=0.4)
+    for xx in range(80, PAGE_W - 80, 70):
+        page.draw_line(fitz.Point(xx, 40), fitz.Point(xx, PAGE_H - 40), width=0.4)
+    n = 0
+    for r in range(rows):
+        for c in range(cols):
+            n += 1
+            x = gx + c * (w + gx)
+            y = gy + r * (h + gy)
+            # detail graphic
+            for off in range(15, int(h) - 60, 16):
+                page.draw_line(fitz.Point(x + 12, y + off), fitz.Point(x + w - 12, y + off), width=0.5)
+            # bottom-left number (heading font) + title (heading) + small scale
+            page.insert_text(fitz.Point(x + 6, y + h - 14), f"{n}", fontsize=16)
+            page.insert_text(fitz.Point(x + 34, y + h - 14), "WINDOW HEAD AT MASONRY", fontsize=16)
+            page.insert_text(fitz.Point(x + 34, y + h - 2), 'SCALE: 1-1/2"=1\'-0"', fontsize=7)
+            for k in range(5):  # body/dimension text dominates the size histogram
+                page.insert_text(fitz.Point(x + 20 + (k % 3) * 55, y + 18 + (k // 3) * 18), '3"', fontsize=7)
+    doc.save(str(path))
+    doc.close()
+    return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
+
+
 def _build_scanned_pdf(path: Path) -> None:
     """A flattened/image-only page: one raster image, no vector paths or text."""
     doc = fitz.open()
@@ -141,6 +177,18 @@ class VectorDetectTests(unittest.TestCase):
         # Clustering collapses this sheet; the title anchors must recover the grid.
         self.assertEqual(report["selected"], "text_anchors")
         self.assertGreaterEqual(len(report["results"]), 7)  # 9 details, allow slack
+
+    def test_numbered_grid_uses_grid_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "grid.pdf"
+            px_w, px_h = _build_numbered_grid_pdf(pdf)
+            doc = fitz.open(str(pdf))
+            report = v.page_detection_report(doc[0], zoom=ZOOM, page_pixel_size=(px_w, px_h))
+            doc.close()
+        self.assertEqual(report["selected"], "grid_anchors")
+        # 12 numbered details; the grid should recover most of them.
+        self.assertGreaterEqual(len(report["results"]), 10)
+        self.assertLessEqual(len(report["results"]), 12)
 
     def test_scanned_page_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
