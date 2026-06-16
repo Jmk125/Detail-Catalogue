@@ -7,6 +7,7 @@ try:
 except Exception:  # pragma: no cover - exercised only when PyMuPDF is absent
     fitz = None
 
+from app import vector_detect as v
 from app.detector import detect_candidate_detail_boxes
 from app.vector_detect import detect_boxes_from_pdf
 
@@ -66,6 +67,38 @@ def _build_unboxed_detail_pdf(path: Path) -> tuple[int, int]:
     return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
 
 
+def _build_connected_unboxed_pdf(path: Path) -> tuple[int, int]:
+    """A dense, fully-connected unboxed sheet (like a structural steel detail page):
+    long dimension/grid lines span the whole sheet so proximity clustering collapses
+    to one blob, but each detail has a larger-font title that anchors it. Exercises
+    the text-anchor strategy."""
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    cols, rows = 3, 3  # 9 details
+    gx, gy = 60, 90
+    w = (PAGE_W - gx * (cols + 1)) / cols
+    h = (PAGE_H - 200 - gy * (rows + 1)) / rows
+    # Linework spanning the entire sheet connects everything together.
+    for yy in range(80, PAGE_H - 80, 50):
+        page.draw_line(fitz.Point(40, yy), fitz.Point(PAGE_W - 40, yy), width=0.4)
+    for xx in range(80, PAGE_W - 80, 60):
+        page.draw_line(fitz.Point(xx, 40), fitz.Point(xx, PAGE_H - 40), width=0.4)
+    n = 0
+    for r in range(rows):
+        for c in range(cols):
+            n += 1
+            x = gx + c * (w + gx)
+            y = gy + r * (h + gy)
+            for off in range(15, int(h) - 25, 15):
+                page.draw_line(fitz.Point(x + 8, y + off), fitz.Point(x + w - 8, y + off), width=0.5)
+            page.insert_text(fitz.Point(x + 8, y + h + 16), f"{n}  BENT PLATE CLIP ANGLE", fontsize=15)
+            for k in range(6):  # plenty of small annotation text -> body size dominates
+                page.insert_text(fitz.Point(x + 15 + (k % 3) * 60, y + 18 + (k // 3) * 22), '3"X3"', fontsize=7)
+    doc.save(str(path))
+    doc.close()
+    return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
+
+
 def _build_scanned_pdf(path: Path) -> None:
     """A flattened/image-only page: one raster image, no vector paths or text."""
     doc = fitz.open()
@@ -97,6 +130,17 @@ class VectorDetectTests(unittest.TestCase):
             boxes = detect_boxes_from_pdf(pdf, 0, zoom=ZOOM, page_pixel_size=(px_w, px_h))
         self.assertIsNotNone(boxes)
         self.assertGreaterEqual(len(boxes), 4)
+
+    def test_text_anchors_separate_connected_sheet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "connected.pdf"
+            px_w, px_h = _build_connected_unboxed_pdf(pdf)
+            doc = fitz.open(str(pdf))
+            report = v.page_detection_report(doc[0], zoom=ZOOM, page_pixel_size=(px_w, px_h))
+            doc.close()
+        # Clustering collapses this sheet; the title anchors must recover the grid.
+        self.assertEqual(report["selected"], "text_anchors")
+        self.assertGreaterEqual(len(report["results"]), 7)  # 9 details, allow slack
 
     def test_scanned_page_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
