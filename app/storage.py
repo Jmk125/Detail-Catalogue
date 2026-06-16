@@ -369,7 +369,12 @@ def cleanup_page_image(project_id: str, image_rel: str | None, settings: Storage
 def redetect_page_boxes(project_id: str, page_id: int) -> list[dict[str, Any]]:
     with connect() as conn:
         row = conn.execute(
-            "SELECT image_path, status FROM pages WHERE project_id=? AND id=?",
+            """
+            SELECT pages.image_path, pages.status, pages.source_page_index,
+                   pages.width, pages.height, pages.zoom, source_files.storage_path
+            FROM pages JOIN source_files ON source_files.id = pages.source_file_id
+            WHERE pages.project_id=? AND pages.id=?
+            """,
             (project_id, page_id),
         ).fetchone()
         if not row:
@@ -384,7 +389,19 @@ def redetect_page_boxes(project_id: str, page_id: int) -> list[dict[str, Any]]:
     if not image_path.exists():
         raise FileNotFoundError("Rendered page image is not available")
 
-    boxes = detect_candidate_detail_boxes(image_path)
+    pdf_path = None
+    if row["storage_path"]:
+        candidate = project_dir(project_id) / row["storage_path"]
+        if candidate.exists():
+            pdf_path = candidate
+    page_size = (row["width"], row["height"]) if row["width"] and row["height"] else None
+    boxes = detect_candidate_detail_boxes(
+        image_path,
+        pdf_path=pdf_path,
+        source_page_index=row["source_page_index"],
+        zoom=float(row["zoom"]) if row["zoom"] else get_settings().render_zoom,
+        page_size=page_size,
+    )
     with connect() as conn:
         conn.execute("UPDATE pages SET boxes_json=?, updated_at=? WHERE id=?", (json.dumps(boxes), utc_now(), page_id))
     return boxes
