@@ -25,6 +25,7 @@ from app.detector import (
     _dedupe_boxes,
     _format_results,
     _remove_composite_boxes,
+    _score_results,
 )
 
 
@@ -142,13 +143,13 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
         preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
         preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
         layout_metrics = _packed_layout_metrics(preview_boxes, width, height, raw_count=len(preview_candidates))
-        packed_layout = layout_metrics["packed_layout"]
-        mode = "packed" if packed_layout else "loose"
+        density = layout_metrics["density"]
+        mode = "packed" if density >= 0.5 else "loose"
         profiles = [
             (f"{mode}_{idx}", profile)
-            for idx, profile in enumerate(_cv2_detection_profiles(width, height, packed_layout), start=1)
+            for idx, profile in enumerate(_cv2_detection_profiles(width, height, density), start=1)
         ]
-        if not packed_layout:
+        if density < 0.5:
             profiles.extend(
                 (f"sparse_{idx}", profile)
                 for idx, profile in enumerate(_cv2_sparse_fallback_profiles(width, height), start=1)
@@ -164,7 +165,7 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
             f"very_many_close={layout_metrics['very_many_close_clusters']}, "
             f"many_raw={layout_metrics['many_raw_clusters']}"
         )
-        print(f"Packed layout: {packed_layout}")
+        print(f"Density: {density:.3f} (mode={mode})")
 
         boxes = []
         for name, profile in profiles:
@@ -185,7 +186,7 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
                 area_pct = (b[2] * b[3]) / sheet_area * 100
                 print(f"  {name:<6} box {b}  area%={area_pct:.1f}")
             boxes.extend(merged)
-        boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
+        boxes = _merge_labels_under_details(boxes, width, height, density=density)
         print(f"After label-merge: {len(boxes)}")
 
         boxes = _dedupe_boxes(boxes)
@@ -200,8 +201,12 @@ def main(image_path: str, *, target: int = 2200, overlay_path: str | None | bool
 
         original_boxes = [_scale_box(b, scale) for b in boxes]
         results = _format_results(original_boxes, orig_width, orig_height, 80)
-        print(f"Final app-style results after area filter (0.15%-62%): {len(results)}")
-        if len(results) > len(final_results):
+        score = _score_results(results, orig_width, orig_height)
+        print(
+            f"Final app-style results after area filter (0.15%-62%): {len(results)} "
+            f"(quality score={score:.2f})"
+        )
+        if score > _score_results(final_results, orig_width, orig_height):
             final_results = results
             selected_pass = threshold_name
 

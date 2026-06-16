@@ -142,6 +142,57 @@ def _median(values):
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
+def _clamp01(value):
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return float(value)
+
+
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def _as_density(value):
+    """Accept either a legacy bool packed flag or a continuous density in [0, 1]."""
+    if value is True:
+        return 1.0
+    if value is False:
+        return 0.0
+    return _clamp01(value)
+
+
+def _blend_profiles(loose, packed, density):
+    """Interpolate every numeric profile field between a loose and packed anchor.
+
+    The two anchors reproduce the historical loose/packed profiles exactly at the
+    density endpoints (0.0 and 1.0), but any value in between yields a smoothly
+    interpolated profile. This removes the bistable "packed vs loose" switch that
+    made adjacent sheets of similar density flip into completely different kernel
+    sizes and merge gaps.
+    """
+    # Reproduce the historical anchors bit-for-bit at the endpoints so existing
+    # loose/packed behavior is unchanged; only intermediate densities interpolate.
+    if density <= 0.0:
+        return dict(loose)
+    if density >= 1.0:
+        return dict(packed)
+    out = {}
+    for key, loose_value in loose.items():
+        packed_value = packed[key]
+        if isinstance(loose_value, tuple):
+            out[key] = tuple(
+                max(1, int(round(_lerp(lv, pv, density))))
+                for lv, pv in zip(loose_value, packed_value)
+            )
+        elif isinstance(loose_value, float):
+            out[key] = _lerp(loose_value, packed_value, density)
+        else:
+            out[key] = max(1, int(round(_lerp(loose_value, packed_value, density))))
+    return out
+
+
 def _packed_layout_metrics(boxes, width, height, raw_count=None):
     """Summarize whether preview candidates look like a packed detail grid."""
     sheet_area = max(1, width * height)
@@ -188,6 +239,21 @@ def _packed_layout_metrics(boxes, width, height, raw_count=None):
         broad_grid or very_many_close_clusters or many_raw_clusters
     )
 
+    # Continuous density in [0, 1] derived from the same signals the old boolean
+    # used, but blended so sheets near the old threshold no longer flip between
+    # wildly different detection profiles. 0 == sparse/loose, 1 == tightly packed.
+    if len(preview) < 4:
+        density = 0.0
+    else:
+        s_preview = _clamp01((len(preview) - 6) / 22.0)        # 6 -> 0, 28 -> 1
+        s_cells = _clamp01((len(occupied) - 6) / 12.0)         # 6 -> 0, 18 -> 1
+        s_near = _clamp01((0.16 - median_nearest) / 0.11) if nearest else 0.0  # far -> 0, close -> 1
+        s_area = _clamp01((0.05 - median_area) / 0.038)        # 5% -> 0, 1.2% -> 1
+        s_raw = _clamp01((raw_count - 18) / 42.0)              # 18 -> 0, 60 -> 1
+        density = _clamp01(
+            0.30 * s_preview + 0.20 * s_cells + 0.20 * s_near + 0.20 * s_area + 0.10 * s_raw
+        )
+
     return {
         "raw_count": raw_count,
         "preview_count": len(preview),
@@ -198,6 +264,7 @@ def _packed_layout_metrics(boxes, width, height, raw_count=None):
         "very_many_close_clusters": very_many_close_clusters,
         "many_raw_clusters": many_raw_clusters,
         "packed_layout": packed_layout,
+        "density": density,
     }
 
 
@@ -212,6 +279,11 @@ def _estimate_packed_layout(boxes, width, height, raw_count=None):
     together.
     """
     return _packed_layout_metrics(boxes, width, height, raw_count=raw_count)["packed_layout"]
+
+
+def _layout_density(boxes, width, height, raw_count=None):
+    """Continuous packing estimate in [0, 1] used to interpolate detection profiles."""
+    return _packed_layout_metrics(boxes, width, height, raw_count=raw_count)["density"]
 
 
 def _cv2_threshold_variants(cv2, gray):
@@ -268,44 +340,16 @@ def _cv2_preview_boxes(cv2, thresh, width, height):
     return _merge_boxes(_cv2_preview_candidates(cv2, thresh, width, height), dx=3, dy=3)
 
 
-def _cv2_detection_profiles(width, height, packed_layout):
-    if packed_layout:
-        return (
-            {
-                "line_kernel": 25,
-                "text_kernel": (32, 8),
-                "dilate_kernel": 8,
-                "iterations": 1,
-                "min_area_ratio": 0.00045,
-                "max_area_ratio": 0.20,
-                "merge_dx": 4,
-                "merge_dy": 4,
-            },
-            {
-                "line_kernel": 17,
-                "text_kernel": (24, 6),
-                "dilate_kernel": 5,
-                "iterations": 1,
-                "min_area_ratio": 0.00025,
-                "max_area_ratio": 0.16,
-                "max_aspect": 16,
-                "merge_dx": 3,
-                "merge_dy": 3,
-            },
-            {
-                "line_kernel": 11,
-                "text_kernel": (18, 5),
-                "dilate_kernel": 3,
-                "iterations": 1,
-                "min_area_ratio": 0.00018,
-                "max_area_ratio": 0.10,
-                "max_aspect": 18,
-                "merge_dx": 2,
-                "merge_dy": 2,
-            },
-        )
+def _cv2_detection_profiles(width, height, density):
+    """Three multi-scale OpenCV profiles, smoothly interpolated by sheet density.
 
-    return (
+    ``density`` may be a legacy bool (the old packed flag) or a float in [0, 1].
+    Each pass blends between a loose anchor (generous kernels/gaps for sparse
+    sheets) and a packed anchor (tight kernels/gaps so adjacent details do not
+    collapse into one group).
+    """
+    density = _as_density(density)
+    loose = (
         {
             "line_kernel": 45,
             "text_kernel": (55, 12),
@@ -313,6 +357,7 @@ def _cv2_detection_profiles(width, height, packed_layout):
             "iterations": 2,
             "min_area_ratio": 0.0008,
             "max_area_ratio": 0.58,
+            "max_aspect": 12,
             "merge_dx": 14,
             "merge_dy": 14,
         },
@@ -323,6 +368,7 @@ def _cv2_detection_profiles(width, height, packed_layout):
             "iterations": 1,
             "min_area_ratio": 0.00055,
             "max_area_ratio": 0.40,
+            "max_aspect": 12,
             "merge_dx": 5,
             "merge_dy": 5,
         },
@@ -338,6 +384,42 @@ def _cv2_detection_profiles(width, height, packed_layout):
             "merge_dy": max(4, int(height * 0.014)),
         },
     )
+    packed = (
+        {
+            "line_kernel": 25,
+            "text_kernel": (32, 8),
+            "dilate_kernel": 8,
+            "iterations": 1,
+            "min_area_ratio": 0.00045,
+            "max_area_ratio": 0.20,
+            "max_aspect": 12,
+            "merge_dx": 4,
+            "merge_dy": 4,
+        },
+        {
+            "line_kernel": 17,
+            "text_kernel": (24, 6),
+            "dilate_kernel": 5,
+            "iterations": 1,
+            "min_area_ratio": 0.00025,
+            "max_area_ratio": 0.16,
+            "max_aspect": 16,
+            "merge_dx": 3,
+            "merge_dy": 3,
+        },
+        {
+            "line_kernel": 11,
+            "text_kernel": (18, 5),
+            "dilate_kernel": 3,
+            "iterations": 1,
+            "min_area_ratio": 0.00018,
+            "max_area_ratio": 0.10,
+            "max_aspect": 18,
+            "merge_dx": 2,
+            "merge_dy": 2,
+        },
+    )
+    return tuple(_blend_profiles(l, p, density) for l, p in zip(loose, packed))
 
 
 def _pillow_preview_candidates(mask_img, width, height, sheet_area):
@@ -361,18 +443,20 @@ def _pillow_preview_boxes(mask_img, width, height, sheet_area):
     return _merge_boxes(_pillow_preview_candidates(mask_img, width, height, sheet_area), dx=3, dy=3)
 
 
-def _pillow_detection_profiles(width, height, packed_layout):
-    if packed_layout:
-        return (
-            {"factor": 0.45, "merge_gap": 4, "min_area_ratio": 0.00045, "max_area_ratio": 0.20, "max_aspect": 12},
-            {"factor": 0.32, "merge_gap": 3, "min_area_ratio": 0.00025, "max_area_ratio": 0.16, "max_aspect": 16},
-            {"factor": 0.24, "merge_gap": 2, "min_area_ratio": 0.00018, "max_area_ratio": 0.10, "max_aspect": 18},
-        )
-    return (
+def _pillow_detection_profiles(width, height, density):
+    """Pillow fallback profiles, interpolated by density like the OpenCV path."""
+    density = _as_density(density)
+    loose = (
         {"factor": 1.0, "merge_gap": 14, "min_area_ratio": 0.0008, "max_area_ratio": 0.58, "max_aspect": 12},
         {"factor": 0.45, "merge_gap": 5, "min_area_ratio": 0.00055, "max_area_ratio": 0.40, "max_aspect": 12},
         {"factor": 0.32, "merge_gap": max(4, int(min(width, height) * 0.010)), "min_area_ratio": 0.00025, "max_area_ratio": 0.22, "max_aspect": 16},
     )
+    packed = (
+        {"factor": 0.45, "merge_gap": 4, "min_area_ratio": 0.00045, "max_area_ratio": 0.20, "max_aspect": 12},
+        {"factor": 0.32, "merge_gap": 3, "min_area_ratio": 0.00025, "max_area_ratio": 0.16, "max_aspect": 16},
+        {"factor": 0.24, "merge_gap": 2, "min_area_ratio": 0.00018, "max_area_ratio": 0.10, "max_aspect": 18},
+    )
+    return tuple(_blend_profiles(l, p, density) for l, p in zip(loose, packed))
 
 def _horizontal_overlap_ratio(a, b):
     ax, ay, aw, ah = a
@@ -387,12 +471,15 @@ def _center_distance_x(a, b):
     return abs((ax + aw / 2) - (bx + bw / 2))
 
 
-def _merge_labels_under_details(boxes, sheet_w, sheet_h, *, packed_layout=False):
+def _merge_labels_under_details(boxes, sheet_w, sheet_h, *, density=0.0):
     """
     Merge likely detail title/detail-number labels below main detail boxes.
 
     This is intentionally generous because the review UI can delete/resize later.
+    ``density`` may be a legacy bool or a float in [0, 1]; denser sheets use a
+    shorter label reach so neighbouring details are not chained together.
     """
+    density = _as_density(density)
     boxes = [list(map(int, b)) for b in boxes]
     boxes.sort(key=lambda b: (b[1], b[0]))
 
@@ -425,8 +512,12 @@ def _merge_labels_under_details(boxes, sheet_w, sheet_h, *, packed_layout=False)
                 # Some design teams place detail tags/titles noticeably below the
                 # graphic. Allow a longer reach only when the lower candidate is
                 # horizontally centered like a label, which avoids broadly merging
-                # stacked details.
-                label_reach = 0.055 if packed_layout else (0.10 if center_close else 0.065)
+                # stacked details. Reach shrinks smoothly toward the packed value
+                # as density rises rather than snapping at a single threshold.
+                if center_close:
+                    label_reach = _lerp(0.10, 0.055, density)
+                else:
+                    label_reach = _lerp(0.065, 0.055, density)
                 near_below = gap <= sheet_h * label_reach
                 label_like_height = bh <= min(max(ch * 0.55, sheet_h * 0.075), sheet_h * 0.10)
                 not_huge = (bw * bh) < (cw * ch) * 0.45
@@ -442,6 +533,59 @@ def _merge_labels_under_details(boxes, sheet_w, sheet_h, *, packed_layout=False)
         boxes = new_boxes
 
     return boxes
+
+
+def _box_quality(box, median_area, sheet_area):
+    """Per-box plausibility in [0, 1] used for scoring and review confidence.
+
+    Penalizes the failure modes that classical morphology produces: slivers, wildly
+    elongated strips, and fragments that are tiny relative to the sheet's typical
+    detail. A clean rectangular detail of about the median size scores near 1.0.
+    """
+    _, _, w, h = box
+    area = max(1, w * h)
+    aspect = w / max(1, h)
+    quality = 1.0
+    if aspect > 4 or aspect < 0.25:
+        quality *= 0.5
+    if aspect > 8 or aspect < 0.12:
+        quality *= 0.4
+    if median_area > 0 and area < 0.18 * median_area:
+        quality *= 0.45
+    if area < sheet_area * 0.0015:
+        quality *= 0.5
+    return quality
+
+
+def _score_results(results, width, height):
+    """Quality score for a candidate pass (higher is better).
+
+    Replaces the old ``len(results)`` selector, which rewarded fragmentation: a
+    pass that shattered one detail into three fragments used to beat a clean pass
+    with the single correct box. The score is the sum of per-box quality (so
+    finding more genuine details still wins) discounted by how much the boxes
+    overlap each other (so split/duplicated boxes are punished).
+    """
+    if not results:
+        return 0.0
+    sheet_area = max(1, width * height)
+    boxes = [(r["x"], r["y"], r["w"], r["h"]) for r in results]
+    median_area = _median([w * h for _, _, w, h in boxes])
+
+    good = sum(_box_quality(b, median_area, sheet_area) for b in boxes)
+
+    worst_overlaps = []
+    for i, b in enumerate(boxes):
+        area_i = max(1, b[2] * b[3])
+        worst = 0.0
+        for j, other in enumerate(boxes):
+            if i == j:
+                continue
+            worst = max(worst, _intersection_area(b, other) / area_i)
+        worst_overlaps.append(min(1.0, worst))
+    overlap_penalty = sum(worst_overlaps) / len(worst_overlaps)
+
+    return good * (1.0 - 0.7 * overlap_penalty)
 
 
 def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: int) -> list[dict]:
@@ -460,18 +604,25 @@ def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: 
         padded.append([x0, y0, pw, ph])
 
     padded.sort(key=lambda b: (b[1], b[0]))
-    return [
-        {
-            "id": f"det_{idx:03d}",
-            "x": x,
-            "y": y,
-            "w": w,
-            "h": h,
-            "confidence": 0.50,
-            "source": "detector",
-        }
-        for idx, (x, y, w, h) in enumerate(padded[:max_boxes], start=1)
-    ]
+    selected = padded[:max_boxes]
+    median_area = _median([w * h for _, _, w, h in selected])
+    results = []
+    for idx, (x, y, w, h) in enumerate(selected, start=1):
+        # Map plausibility into a modest confidence band so the review UI can
+        # surface the strongest candidates without overstating certainty.
+        confidence = round(0.35 + 0.50 * _box_quality((x, y, w, h), median_area, sheet_area), 2)
+        results.append(
+            {
+                "id": f"det_{idx:03d}",
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "confidence": confidence,
+                "source": "detector",
+            }
+        )
+    return results
 
 
 def _cv2_candidate_mask(
@@ -637,14 +788,14 @@ def _cv2_sparse_fallback_profiles(width, height):
 def _cv2_boxes_from_threshold(cv2, thresh, width, height, *, include_sparse_fallback=False):
     preview_candidates = _cv2_preview_candidates(cv2, thresh, width, height)
     preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
-    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
+    density = _layout_density(preview_boxes, width, height, raw_count=len(preview_candidates))
 
-    # Multi-scale detection adapts to sheet density. Packed sheets use tighter
-    # kernels/gaps and shorter label reach so adjacent details do not collapse
-    # into large groups; looser sheets keep the more generous grouping needed to
-    # capture sparse linework and separated labels.
-    profiles = list(_cv2_detection_profiles(width, height, packed_layout))
-    if include_sparse_fallback and not packed_layout:
+    # Multi-scale detection adapts to sheet density on a continuous scale. Denser
+    # sheets use tighter kernels/gaps and shorter label reach so adjacent details
+    # do not collapse into large groups; looser sheets keep the more generous
+    # grouping needed to capture sparse linework and separated labels.
+    profiles = list(_cv2_detection_profiles(width, height, density))
+    if include_sparse_fallback and density < 0.5:
         profiles.extend(_cv2_sparse_fallback_profiles(width, height))
 
     boxes = []
@@ -655,7 +806,7 @@ def _cv2_boxes_from_threshold(cv2, thresh, width, height, *, include_sparse_fall
         candidates = _cv2_candidates(cv2, thresh, width, height, **candidate_profile)
         boxes.extend(_merge_boxes(candidates, dx=merge_dx, dy=merge_dy))
 
-    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
+    boxes = _merge_labels_under_details(boxes, width, height, density=density)
     boxes = _dedupe_boxes(boxes)
     return _remove_composite_boxes(boxes)
 
@@ -702,8 +853,9 @@ def _detect_with_cv2(image_path: Path, max_boxes: int) -> list[dict] | None:
             # Do not stop at the first non-empty fallback. Some difficult sheets
             # produce one or two incidental boxes on a conservative pass, while a
             # later threshold/profile finds the actual detail set. Score every
-            # pass and keep the richest candidate set.
-            score = len(results)
+            # pass on box *quality* (not raw count) and keep the best one so a
+            # fragmented/overlapping pass cannot win just by emitting more boxes.
+            score = _score_results(results, orig_width, orig_height)
             if score > best_score:
                 best_score = score
                 best_results = results
@@ -771,10 +923,10 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
         dilate += 1
     preview_candidates = _pillow_preview_candidates(mask_img, width, height, sheet_area)
     preview_boxes = _merge_boxes(preview_candidates, dx=3, dy=3)
-    packed_layout = _estimate_packed_layout(preview_boxes, width, height, raw_count=len(preview_candidates))
+    density = _layout_density(preview_boxes, width, height, raw_count=len(preview_candidates))
 
     boxes = []
-    profiles = _pillow_detection_profiles(width, height, packed_layout)
+    profiles = _pillow_detection_profiles(width, height, density)
     for profile in profiles:
         pass_dilate = max(3, int(round(dilate * profile["factor"])))
         if pass_dilate % 2 == 0:
@@ -805,7 +957,7 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
             )
         )
 
-    boxes = _merge_labels_under_details(boxes, width, height, packed_layout=packed_layout)
+    boxes = _merge_labels_under_details(boxes, width, height, density=density)
     boxes = _dedupe_boxes(boxes)
     boxes = _remove_composite_boxes(boxes)
 
