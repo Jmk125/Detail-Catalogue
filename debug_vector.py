@@ -1,22 +1,28 @@
 """Diagnostic: inspect what the vector/text layer of a PDF page contains and what
-the vector detector extracts from it.
+each vector detection strategy extracts from it.
 
 Usage:
     python debug_vector.py /path/to/drawing.pdf --page 1 --zoom 2.0 --overlay
 
 This is the quickest way to see, on a real sheet, whether the page is a true
-vector PDF (lots of drawings/words) or a flattened scan (almost none), how many
-explicit detail rectangles exist, and how many candidate boxes the detector
-produces. Use it to sanity-check before trusting the vector pass on a new design
-team's drawings.
+vector PDF, how many explicit detail rectangles exist, the font-size profile of
+its text (which drives title/number anchoring), and the box count + quality score
+of every strategy so you can tell which one is carrying the sheet.
 """
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 import fitz
 
 from app import vector_detect as v
+
+
+def _font_histogram(page, scale_x, scale_y, width, height):
+    spans = v._text_spans(page, scale_x, scale_y, width, height)
+    hist = Counter(round(s, 1) for _t, _b, s in spans if s > 0)
+    return spans, hist
 
 
 def main(pdf_path: str, *, page_number: int, zoom: float, overlay: bool) -> None:
@@ -31,27 +37,38 @@ def main(pdf_path: str, *, page_number: int, zoom: float, overlay: bool) -> None
         px_w, px_h = int(round(pr.width * zoom)), int(round(pr.height * zoom))
         scale_x, scale_y = px_w / pr.width, px_h / pr.height
 
-        drawings = page.get_drawings()
-        words = page.get_text("words")
+        report = v.page_detection_report(page, zoom=zoom, page_pixel_size=(px_w, px_h))
+        diag = report["diagnostics"]
+
         print(f"Page {page_number}: {pr.width:.0f} x {pr.height:.0f} pts -> {px_w} x {px_h} px @ zoom {zoom}")
-        print(f"Vector drawings: {len(drawings)}   text words: {len(words)}")
-        if len(drawings) < 4 and len(words) < 8:
-            print("=> Looks like a scanned/flattened page (no usable vector layer); raster fallback would be used.")
+        print(f"Usable vector layer: {report['usable']}")
+        print(
+            f"Ink boxes: {diag['drawings']}   words: {diag['words']}   "
+            f"rectangles: {diag['rects_total']} (detail-sized: {diag['rect_candidates']})   "
+            f"text spans: {diag['spans']}"
+        )
+        print(
+            f"Heading anchors: body_size={diag.get('body_size', 0):.1f}px "
+            f"threshold={diag.get('threshold', 0):.1f}px "
+            f"heading_spans={diag.get('heading_spans', 0)} "
+            f"anchor_groups={diag.get('anchor_groups', 0)}"
+        )
 
-        rects, ink, vwords = v._page_geometry(page, scale_x, scale_y, px_w, px_h)
-        rect_candidates = v._candidates_from_rectangles(rects, px_w, px_h)
-        print(f"Explicit rectangles: {len(rects)}  -> detail-sized rectangle candidates: {len(rect_candidates)}")
-        print(f"Ink boxes: {len(ink)}   word boxes: {len(vwords)}")
+        spans, hist = _font_histogram(page, scale_x, scale_y, px_w, px_h)
+        print("Font-size histogram (px -> count):")
+        for size, count in sorted(hist.items()):
+            print(f"  {size:6.1f}  x{count}")
+        big = sorted([(s, t) for t, _b, s in spans], reverse=True)[:12]
+        if big:
+            print("Largest text:", ", ".join(f"{t!r}@{s:.0f}px" for s, t in big))
 
-        sample_words = [page.get_text("words")[i][4] for i in range(min(12, len(words)))]
-        if sample_words:
-            print("Sample text:", ", ".join(sample_words))
+        print("\nStrategies (box count / quality score):")
+        for s in report["strategies"]:
+            mark = "  <= selected" if s["name"] == report["selected"] else ""
+            print(f"  {s['name']:<26} raw={s['raw']:<4} final={s['final']:<4} score={s['score']:<6}{mark}")
 
-        results = v.detect_boxes_from_pdf(pdf_path, index, zoom=zoom, page_pixel_size=(px_w, px_h))
-        if results is None:
-            print("Vector detector returned None (no usable vector content).")
-            return
-        print(f"\nVector candidate boxes: {len(results)}")
+        results = report["results"]
+        print(f"\nSelected strategy: {report['selected']}  -> {len(results)} boxes")
         print(json.dumps(results, indent=2))
 
         if overlay:
@@ -64,7 +81,7 @@ def main(pdf_path: str, *, page_number: int, zoom: float, overlay: bool) -> None
             for r in results:
                 x, y, w, h = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
                 cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 6)
-                cv2.putText(img, r["id"], (x, max(30, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, r["id"], (x, max(30, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 0, 0), 4, cv2.LINE_AA)
             out = Path(pdf_path).with_name(f"{Path(pdf_path).stem}.p{page_number}.vector_boxes.png")
             cv2.imwrite(str(out), img)
             print(f"\nOverlay written: {out}")
