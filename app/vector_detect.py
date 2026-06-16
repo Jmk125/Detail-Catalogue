@@ -231,6 +231,103 @@ def _body_text_size(sizes):
     return min(counts, key=lambda k: (-counts[k], k))
 
 
+def _heading_window(spans):
+    """Return ``(body_size, low, high)`` font-size band for detail headings.
+
+    ``body`` is the most common (body/dimension) size; detail titles/numbers sit
+    modestly above it, while the sheet title/logo sits above ``high``.
+    """
+    sizes = [s for _, _, s in spans if s > 0]
+    if len(sizes) < 3:
+        return None
+    body = _body_text_size(sizes)
+    return body, max(body * 1.25, body + 2.0), body * 2.5
+
+
+def _detail_number_spans(spans, low, high, width, height):
+    """Heading-sized short tokens that look like detail numbers (e.g. 1, 12, A3).
+
+    Detail numbers are the most reliable per-detail marker: one per detail, on a
+    regular grid, and a larger font than dimension text. We require a short token
+    containing a digit so dimension strings and titles are excluded.
+    """
+    out = []
+    for text, box, size in spans:
+        if not (low <= size <= high):
+            continue
+        if _in_title_block_strip(box, width, height):
+            continue
+        token = text.strip()
+        if 1 <= len(token) <= 3 and any(c.isdigit() for c in token) and token.replace(".", "").isalnum():
+            out.append(box)
+    return out
+
+
+def _cluster_1d(values, tol):
+    """Average-link 1-D clustering: returns sorted cluster centers."""
+    ordered = sorted(values)
+    centers = []
+    current = [ordered[0]]
+    for v in ordered[1:]:
+        if v - current[-1] <= tol:
+            current.append(v)
+        else:
+            centers.append(sum(current) / len(current))
+            current = [v]
+    centers.append(sum(current) / len(current))
+    return centers
+
+
+def _median_pitch(centers, fallback):
+    if len(centers) < 2:
+        return fallback
+    diffs = sorted(centers[i + 1] - centers[i] for i in range(len(centers) - 1))
+    return diffs[len(diffs) // 2]
+
+
+def _candidates_from_grid(number_boxes, width, height):
+    """Reconstruct a detail grid from detail-number anchors.
+
+    The columns come from the number x-positions and the rows from their
+    y-positions. Detail titles/numbers sit at the BOTTOM-LEFT of each cell (the
+    near-universal convention: title/number/scale read below the graphic), so a
+    cell spans rightward from its number and upward from it to the row above.
+    """
+    if len(number_boxes) < 4:
+        return []
+    col_tol = max(40, int(width * 0.02))
+    row_tol = max(40, int(height * 0.02))
+    cols = _cluster_1d([b[0] for b in number_boxes], col_tol)
+    rows = _cluster_1d([b[1] + b[3] / 2.0 for b in number_boxes], row_tol)
+    if len(cols) * len(rows) < 4:
+        return []
+    col_pitch = _median_pitch(cols, width)
+    row_pitch = _median_pitch(rows, height)
+    lead = col_pitch * 0.10
+    title_bar = row_pitch * 0.12
+
+    boxes = []
+    seen = set()
+    for b in number_boxes:
+        cx, cy = b[0], b[1] + b[3] / 2.0
+        ci = min(range(len(cols)), key=lambda i: abs(cols[i] - cx))
+        ri = min(range(len(rows)), key=lambda i: abs(rows[i] - cy))
+        if (ci, ri) in seen:
+            continue
+        seen.add((ci, ri))
+        left = cols[ci] - lead
+        right = (cols[ci + 1] - lead) if ci + 1 < len(cols) else cols[ci] - lead + col_pitch
+        bottom = rows[ri] + title_bar
+        top = (rows[ri - 1] + title_bar) if ri > 0 else (rows[ri] - row_pitch + title_bar)
+        x0 = max(0, int(left))
+        y0 = max(0, int(top))
+        x1 = min(width, int(right))
+        y1 = min(height, int(bottom))
+        if x1 > x0 and y1 > y0:
+            boxes.append([x0, y0, x1 - x0, y1 - y0])
+    return boxes
+
+
 def _in_title_block_strip(box, width, height) -> bool:
     """True for text in the sheet's title-block band (right edge or bottom strip).
 
@@ -251,12 +348,10 @@ def _heading_anchors(spans, width, height):
     sheet-title size, excluding anything in the title-block band, then merge
     neighbouring spans into title groups; each group anchors one detail.
     """
-    sizes = [s for _, _, s in spans if s > 0]
-    if len(sizes) < 3:
+    window = _heading_window(spans)
+    if window is None:
         return [], {"body_size": 0.0, "low": 0.0, "high": 0.0, "heading_spans": 0, "anchor_groups": 0}
-    body_size = _body_text_size(sizes)
-    low = max(body_size * 1.25, body_size + 2.0)
-    high = body_size * 2.5  # above this is the sheet title block / logo, not a detail
+    body_size, low, high = window
     heads = [
         box
         for (_text, box, s) in spans
@@ -343,6 +438,19 @@ def _build_options(page, scale_x, scale_y, width, height):
     if rect_candidates:
         options.append(("rectangles", rect_candidates))
 
+    # Detail-number grid: the most reliable strategy for the common case of a
+    # regular grid of numbered details (boxed or not).
+    grid_diag = {"number_anchors": 0, "grid_boxes": 0}
+    window = _heading_window(spans)
+    if window is not None:
+        _body, low, high = window
+        number_boxes = _detail_number_spans(spans, low, high, width, height)
+        grid_diag["number_anchors"] = len(number_boxes)
+        grid_candidates = _candidates_from_grid(number_boxes, width, height)
+        grid_diag["grid_boxes"] = len(grid_candidates)
+        if grid_candidates:
+            options.append(("grid_anchors", grid_candidates))
+
     anchors, anchor_diag = _heading_anchors(spans, width, height)
     if anchors:
         anchor_candidates = _candidates_from_anchors(anchors, ink, width, height)
@@ -362,6 +470,7 @@ def _build_options(page, scale_x, scale_y, width, height):
         "rects_total": len(rects),
         "rect_candidates": len(rect_candidates),
         "spans": len(spans),
+        **grid_diag,
         **anchor_diag,
     }
     return options, diag
@@ -382,7 +491,7 @@ def _postprocess(boxes, width, height, *, merge_labels=True):
 
 
 def _score_option(name, boxes, width, height, max_boxes, source="vector"):
-    merge_labels = not name.startswith("text_anchors")
+    merge_labels = not (name.startswith("text_anchors") or name.startswith("grid"))
     processed = _postprocess(boxes, width, height, merge_labels=merge_labels)
     results = _format_results(processed, width, height, max_boxes)
     for r in results:
