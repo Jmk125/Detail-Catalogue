@@ -49,7 +49,7 @@ def main(pdf_path: str, *, page_number: int, zoom: float, overlay: bool) -> None
         )
         print(
             f"Heading anchors: body_size={diag.get('body_size', 0):.1f}px "
-            f"threshold={diag.get('threshold', 0):.1f}px "
+            f"window=[{diag.get('low', 0):.1f}..{diag.get('high', 0):.1f}]px "
             f"heading_spans={diag.get('heading_spans', 0)} "
             f"anchor_groups={diag.get('anchor_groups', 0)}"
         )
@@ -61,6 +61,18 @@ def main(pdf_path: str, *, page_number: int, zoom: float, overlay: bool) -> None
         big = sorted([(s, t) for t, _b, s in spans], reverse=True)[:12]
         if big:
             print("Largest text:", ", ".join(f"{t!r}@{s:.0f}px" for s, t in big))
+
+        # Spans that currently qualify as detail-title anchors (after title-block
+        # and oversize exclusion) -- this is what the partition is anchored on.
+        low, high = diag.get("low", 0), diag.get("high", 0)
+        anchor_text = [
+            (s, t, b)
+            for t, b, s in spans
+            if low <= s <= high and not v._in_title_block_strip(b, px_w, px_h)
+        ]
+        print(f"Anchor-candidate text spans: {len(anchor_text)}")
+        for s, t, b in sorted(anchor_text, reverse=True)[:25]:
+            print(f"  {s:5.0f}px  ({b[0]:>5},{b[1]:>5})  {t!r}")
 
         print("\nStrategies (box count / quality score):")
         for s in report["strategies"]:

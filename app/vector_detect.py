@@ -24,12 +24,14 @@ Strategies (all scored with the raster path's quality metric; the best wins):
 from __future__ import annotations
 
 import importlib
+import math
 from pathlib import Path
 
 from .detector import (
     _dedupe_boxes,
     _format_results,
     _layout_density,
+    _median,
     _merge_boxes,
     _merge_labels_under_details,
     _remove_composite_boxes,
@@ -229,20 +231,38 @@ def _body_text_size(sizes):
     return min(counts, key=lambda k: (-counts[k], k))
 
 
+def _in_title_block_strip(box, width, height) -> bool:
+    """True for text in the sheet's title-block band (right edge or bottom strip).
+
+    Title blocks are near-universally along the right edge and/or bottom of the
+    sheet. Their text (sheet name/number, firm, issuances) is not a detail anchor.
+    """
+    cx = box[0] + box[2] / 2.0
+    cy = box[1] + box[3] / 2.0
+    return cx > width * 0.86 or cy > height * 0.90
+
+
 def _heading_anchors(spans, width, height):
     """Group heading-sized text into per-detail anchors.
 
-    Detail titles/numbers are typically a larger font than dimension/annotation
-    text. We take spans whose size is clearly above the body-text size and merge
-    neighbouring ones into title groups; each group anchors one detail.
+    Detail titles/numbers are a larger font than dimension/annotation text but a
+    smaller font than the sheet title/logo. We keep spans whose size is modestly
+    above the body-text size (the mode, robust to heading count) and below the
+    sheet-title size, excluding anything in the title-block band, then merge
+    neighbouring spans into title groups; each group anchors one detail.
     """
     sizes = [s for _, _, s in spans if s > 0]
     if len(sizes) < 3:
-        return [], {"body_size": 0.0, "threshold": 0.0, "heading_spans": 0}
+        return [], {"body_size": 0.0, "low": 0.0, "high": 0.0, "heading_spans": 0, "anchor_groups": 0}
     body_size = _body_text_size(sizes)
-    threshold = max(body_size * 1.3, body_size + 2.0)
-    heads = [box for (_text, box, s) in spans if s >= threshold]
-    diag = {"body_size": body_size, "threshold": threshold, "heading_spans": len(heads)}
+    low = max(body_size * 1.25, body_size + 2.0)
+    high = body_size * 2.5  # above this is the sheet title block / logo, not a detail
+    heads = [
+        box
+        for (_text, box, s) in spans
+        if low <= s <= high and not _in_title_block_strip(box, width, height)
+    ]
+    diag = {"body_size": body_size, "low": low, "high": high, "heading_spans": len(heads), "anchor_groups": 0}
     if len(heads) < 2:
         return [], diag
     groups = _merge_boxes(heads, dx=max(8, int(width * 0.020)), dy=max(6, int(height * 0.010)))
@@ -252,13 +272,32 @@ def _heading_anchors(spans, width, height):
 
 
 def _candidates_from_anchors(anchors, ink, width, height):
-    """Assign each ink box to its nearest title anchor; bound each anchor's ink."""
+    """Assign each ink box to its nearest title anchor within a bounded radius.
+
+    The radius is tied to how far apart the anchors are, so ink only joins a
+    nearby detail. Without it, a lone anchor next to whitespace would sweep up a
+    full-height strip of the sheet (the failure mode seen on real sheets).
+    """
     if len(anchors) < 2:
         return []
     sheet_area = max(1, width * height)
     centers = [(ax, ay) for ax, ay, _ in anchors]
-    buckets: list[list[list[int]]] = [[box] for _ax, _ay, box in anchors]
 
+    spacings = []
+    for i, (ax, ay) in enumerate(centers):
+        nearest = None
+        for j, (bx, by) in enumerate(centers):
+            if i == j:
+                continue
+            d = math.hypot(ax - bx, ay - by)
+            nearest = d if nearest is None else min(nearest, d)
+        if nearest is not None:
+            spacings.append(nearest)
+    diagonal = math.hypot(width, height)
+    radius = max(0.10 * diagonal, _median(spacings) * 1.1) if spacings else 0.20 * diagonal
+    radius_sq = radius * radius
+
+    buckets: list[list[list[int]]] = [[box] for _ax, _ay, box in anchors]
     for b in ink:
         if b[2] * b[3] > sheet_area * 0.45:
             continue
@@ -271,7 +310,8 @@ def _candidates_from_anchors(anchors, ink, width, height):
             if best_d is None or d < best_d:
                 best_d = d
                 best_i = i
-        buckets[best_i].append(b)
+        if best_d is not None and best_d <= radius_sq:
+            buckets[best_i].append(b)
 
     boxes = []
     for group in buckets:
