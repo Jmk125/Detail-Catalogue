@@ -968,8 +968,60 @@ def _detect_with_pillow_numpy(image_path: Path, max_boxes: int) -> list[dict]:
     return _format_results(boxes, original_width, original_height, max_boxes)
 
 
-def detect_candidate_detail_boxes(image_path: Path, max_boxes: int = 80) -> list[dict]:
+def _detect_raster(image_path: Path, max_boxes: int) -> list[dict]:
     cv2_result = _detect_with_cv2(image_path, max_boxes)
     if cv2_result is not None:
         return cv2_result
     return _detect_with_pillow_numpy(image_path, max_boxes)
+
+
+def _image_pixel_size(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as img:
+        return img.width, img.height
+
+
+def detect_candidate_detail_boxes(
+    image_path: Path,
+    max_boxes: int = 80,
+    *,
+    pdf_path: Path | None = None,
+    source_page_index: int | None = None,
+    zoom: float = 2.0,
+    page_size: tuple[int, int] | None = None,
+) -> list[dict]:
+    """Detect candidate detail boxes for a rendered page.
+
+    When the source PDF page is supplied and has a usable vector layer, the
+    vector detector reads detail borders/text directly instead of inferring them
+    from rasterized pixels. Both the vector and raster results are scored with the
+    same quality metric and the stronger one wins, so the vector pass only
+    replaces raster when it is genuinely better (scanned pages have no vector
+    layer and fall back automatically).
+    """
+    raster_result = _detect_raster(image_path, max_boxes)
+
+    if pdf_path is not None and source_page_index is not None:
+        try:
+            sheet_size = page_size or _image_pixel_size(image_path)
+        except Exception:
+            sheet_size = page_size
+        vector_result = None
+        if sheet_size is not None:
+            try:
+                from .vector_detect import detect_boxes_from_pdf
+
+                vector_result = detect_boxes_from_pdf(
+                    pdf_path,
+                    source_page_index,
+                    zoom=zoom,
+                    max_boxes=max_boxes,
+                    page_pixel_size=sheet_size,
+                )
+            except Exception:
+                vector_result = None
+        if vector_result and sheet_size is not None:
+            width, height = sheet_size
+            if _score_results(vector_result, width, height) >= _score_results(raster_result, width, height):
+                return vector_result
+
+    return raster_result

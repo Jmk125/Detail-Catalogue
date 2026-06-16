@@ -63,7 +63,13 @@ def process_project_pages(project_id: str) -> None:
                 f"image={image_rel} starting",
                 flush=True,
             )
-            boxes = detect_candidate_detail_boxes(image_path)
+            boxes = detect_candidate_detail_boxes(
+                image_path,
+                pdf_path=pdf_path,
+                source_page_index=page["source_page_index"],
+                zoom=settings.render_zoom,
+                page_size=(info["width"], info["height"]),
+            )
             print(
                 f"[detail-detect] project={project_id} page={page['global_index'] + 1} "
                 f"boxes={len(boxes)} image={image_rel}",
