@@ -552,6 +552,10 @@ def _box_quality(box, median_area, sheet_area):
         quality *= 0.4
     if median_area > 0 and area < 0.18 * median_area:
         quality *= 0.45
+    # A box several times the typical detail usually spans multiple details
+    # (an over-grown anchor region or a column wrapper); discount it.
+    if median_area > 0 and area > 3.0 * median_area:
+        quality *= 0.4
     if area < sheet_area * 0.0015:
         quality *= 0.5
     return quality
@@ -560,11 +564,11 @@ def _box_quality(box, median_area, sheet_area):
 def _score_results(results, width, height):
     """Quality score for a candidate pass (higher is better).
 
-    Replaces the old ``len(results)`` selector, which rewarded fragmentation: a
-    pass that shattered one detail into three fragments used to beat a clean pass
-    with the single correct box. The score is the sum of per-box quality (so
-    finding more genuine details still wins) discounted by how much the boxes
-    overlap each other (so split/duplicated boxes are punished).
+    Replaces the old ``len(results)`` selector, which rewarded fragmentation. Each
+    box contributes its plausibility, discounted by how much it overlaps any other
+    box. The discount is squared so heavily overlapping/duplicated boxes (the
+    failure mode of over-segmentation and of nearest-anchor "strips") contribute
+    almost nothing, while a clean, non-overlapping set keeps its full value.
     """
     if not results:
         return 0.0
@@ -572,20 +576,20 @@ def _score_results(results, width, height):
     boxes = [(r["x"], r["y"], r["w"], r["h"]) for r in results]
     median_area = _median([w * h for _, _, w, h in boxes])
 
-    good = sum(_box_quality(b, median_area, sheet_area) for b in boxes)
-
-    worst_overlaps = []
+    total = 0.0
     for i, b in enumerate(boxes):
         area_i = max(1, b[2] * b[3])
         worst = 0.0
         for j, other in enumerate(boxes):
             if i == j:
                 continue
-            worst = max(worst, _intersection_area(b, other) / area_i)
-        worst_overlaps.append(min(1.0, worst))
-    overlap_penalty = sum(worst_overlaps) / len(worst_overlaps)
-
-    return good * (1.0 - 0.7 * overlap_penalty)
+            # Overlap relative to the smaller box, so a box nested in a larger one
+            # is fully penalized.
+            denom = max(1, min(area_i, other[2] * other[3]))
+            worst = max(worst, _intersection_area(b, other) / denom)
+        clean = max(0.0, 1.0 - min(1.0, worst)) ** 2
+        total += _box_quality(b, median_area, sheet_area) * clean
+    return total
 
 
 def _format_results(boxes: list[list[int]], width: int, height: int, max_boxes: int) -> list[dict]:

@@ -285,46 +285,98 @@ def _median_pitch(centers, fallback):
     return diffs[len(diffs) // 2]
 
 
-def _candidates_from_grid(number_boxes, width, height):
-    """Reconstruct a detail grid from detail-number anchors.
+def _clamp_cell_to_ink(cell, ink, number_box):
+    """Shrink a geometric grid cell to the ink it actually contains.
 
-    The columns come from the number x-positions and the rows from their
-    y-positions. Detail titles/numbers sit at the BOTTOM-LEFT of each cell (the
-    near-universal convention: title/number/scale read below the graphic), so a
-    cell spans rightward from its number and upward from it to the row above.
+    Geometric cells (from the anchor grid) overshoot on irregular sheets. Clamping
+    to the bounding box of the ink whose center falls inside the cell makes each
+    box hug its detail and self-corrects overshoot, while always keeping the
+    detail number inside.
+    """
+    cl, ct, cw, ch = cell
+    cr, cb = cl + cw, ct + ch
+    cell_area = max(1, cw * ch)
+    minx = miny = None
+    maxx = maxy = None
+    for b in ink:
+        if b[2] * b[3] > cell_area * 0.9:
+            continue
+        bx = b[0] + b[2] / 2.0
+        by = b[1] + b[3] / 2.0
+        if cl <= bx <= cr and ct <= by <= cb:
+            minx = b[0] if minx is None else min(minx, b[0])
+            miny = b[1] if miny is None else min(miny, b[1])
+            maxx = b[0] + b[2] if maxx is None else max(maxx, b[0] + b[2])
+            maxy = b[1] + b[3] if maxy is None else max(maxy, b[1] + b[3])
+    if minx is None:
+        return cell
+    minx = min(minx, number_box[0])
+    miny = min(miny, number_box[1])
+    maxx = max(maxx, number_box[0] + number_box[2])
+    maxy = max(maxy, number_box[1] + number_box[3])
+    x0 = int(max(cl, minx))
+    y0 = int(max(ct, miny))
+    x1 = int(min(cr, maxx))
+    y1 = int(min(cb, maxy))
+    if x1 > x0 and y1 > y0:
+        return [x0, y0, x1 - x0, y1 - y0]
+    return cell
+
+
+def _candidates_from_grid(number_boxes, ink, width, height):
+    """Reconstruct detail boxes from detail-number anchors.
+
+    Columns are clustered globally (column x is stable even when detail heights
+    vary), but rows are derived PER COLUMN so a tall detail in one column does not
+    distort another column's rows. Titles/numbers sit at the bottom-left of each
+    detail, so a cell spans rightward from its number and upward to the previous
+    detail in the same column. Each geometric cell is finally clamped to its ink.
     """
     if len(number_boxes) < 4:
         return []
     col_tol = max(40, int(width * 0.02))
     row_tol = max(40, int(height * 0.02))
-    cols = _cluster_1d([b[0] for b in number_boxes], col_tol)
-    rows = _cluster_1d([b[1] + b[3] / 2.0 for b in number_boxes], row_tol)
-    if len(cols) * len(rows) < 4:
+    col_centers = _cluster_1d([b[0] for b in number_boxes], col_tol)
+    if not col_centers:
         return []
-    col_pitch = _median_pitch(cols, width)
-    row_pitch = _median_pitch(rows, height)
+    col_pitch = _median_pitch(col_centers, width)
+    row_pitch = _median_pitch(_cluster_1d([b[1] + b[3] / 2.0 for b in number_boxes], row_tol), height)
     lead = col_pitch * 0.10
     title_bar = row_pitch * 0.12
 
-    boxes = []
-    seen = set()
+    by_col: dict[int, list[list[int]]] = {}
     for b in number_boxes:
-        cx, cy = b[0], b[1] + b[3] / 2.0
-        ci = min(range(len(cols)), key=lambda i: abs(cols[i] - cx))
-        ri = min(range(len(rows)), key=lambda i: abs(rows[i] - cy))
-        if (ci, ri) in seen:
-            continue
-        seen.add((ci, ri))
-        left = cols[ci] - lead
-        right = (cols[ci + 1] - lead) if ci + 1 < len(cols) else cols[ci] - lead + col_pitch
-        bottom = rows[ri] + title_bar
-        top = (rows[ri - 1] + title_bar) if ri > 0 else (rows[ri] - row_pitch + title_bar)
-        x0 = max(0, int(left))
-        y0 = max(0, int(top))
-        x1 = min(width, int(right))
-        y1 = min(height, int(bottom))
-        if x1 > x0 and y1 > y0:
-            boxes.append([x0, y0, x1 - x0, y1 - y0])
+        ci = min(range(len(col_centers)), key=lambda i: abs(col_centers[i] - b[0]))
+        by_col.setdefault(ci, []).append(b)
+
+    boxes = []
+    for ci, members in by_col.items():
+        left = col_centers[ci] - lead
+        right = (col_centers[ci + 1] - lead) if ci + 1 < len(col_centers) else col_centers[ci] - lead + col_pitch
+        members = sorted(members, key=lambda b: b[1] + b[3] / 2.0)
+        prev_bottom = None
+        for m in members:
+            cy = m[1] + m[3] / 2.0
+            bottom = cy + title_bar
+            top = (prev_bottom) if prev_bottom is not None else (cy - row_pitch + title_bar)
+            prev_bottom = bottom
+            cell = [
+                int(max(0, left)),
+                int(max(0, top)),
+                int(min(width, right) - max(0, left)),
+                int(min(height, bottom) - max(0, top)),
+            ]
+            if cell[2] <= 0 or cell[3] <= 0:
+                continue
+            if not _detail_sized(cell, width, height):
+                continue
+            clamped = _clamp_cell_to_ink(cell, ink, m)
+            # Clamp only to tighten; if it collapsed the cell (sparse ink), keep
+            # the geometric cell so we never drop a genuine numbered detail.
+            if clamped[2] * clamped[3] >= 0.25 * cell[2] * cell[3]:
+                boxes.append(clamped)
+            else:
+                boxes.append(cell)
     return boxes
 
 
@@ -446,7 +498,7 @@ def _build_options(page, scale_x, scale_y, width, height):
         _body, low, high = window
         number_boxes = _detail_number_spans(spans, low, high, width, height)
         grid_diag["number_anchors"] = len(number_boxes)
-        grid_candidates = _candidates_from_grid(number_boxes, width, height)
+        grid_candidates = _candidates_from_grid(number_boxes, ink, width, height)
         grid_diag["grid_boxes"] = len(grid_candidates)
         if grid_candidates:
             options.append(("grid_anchors", grid_candidates))
