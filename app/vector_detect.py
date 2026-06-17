@@ -27,6 +27,8 @@ import importlib
 import math
 from pathlib import Path
 
+import numpy as np
+
 from .detector import (
     _dedupe_boxes,
     _format_results,
@@ -380,6 +382,169 @@ def _candidates_from_grid(number_boxes, ink, width, height):
     return boxes
 
 
+def _detail_anchor_points(spans, width, height):
+    """One anchor point per detail: prefer numbers (clean grids), else titles.
+
+    Returns ``[(cx, cy, box), ...]``. Numbers are used when there are enough of
+    them; otherwise heading-sized non-numeric titles are used (with their stacked
+    lines merged) so number-less sheets still get one anchor per detail.
+    """
+    window = _heading_window(spans)
+    if window is None:
+        return []
+    body, low, high = window
+    numbers = _detail_number_spans(spans, low, high, width, height)
+    if len(numbers) >= 4:
+        groups = _merge_boxes(numbers, dx=int(body * 0.6), dy=int(body * 0.6))
+    else:
+        titles = [
+            box
+            for (text, box, s) in spans
+            if low <= s <= high
+            and not _in_title_block_strip(box, width, height)
+            and not (1 <= len(text.strip()) <= 3 and any(c.isdigit() for c in text.strip()))
+        ]
+        if len(titles) < 2:
+            return []
+        groups = _merge_boxes(titles, dx=int(body * 2.0), dy=int(body * 2.2))
+    return [(g[0] + g[2] / 2.0, g[1] + g[3] / 2.0, g) for g in groups]
+
+
+def _ink_xyxy(ink):
+    if not ink:
+        return np.zeros((0, 4))
+    a = np.asarray(ink, dtype=float)
+    return np.column_stack([a[:, 0], a[:, 1], a[:, 0] + a[:, 2], a[:, 1] + a[:, 3]])
+
+
+def _density_profile(ink, lo, hi, perp_lo, perp_hi, axis, bins=400):
+    """Ink coverage profile along ``axis`` within a perpendicular band."""
+    if len(ink) == 0:
+        return np.zeros(bins)
+    x0, y0, x1, y1 = ink[:, 0], ink[:, 1], ink[:, 2], ink[:, 3]
+    if axis == 0:
+        keep = (y1 >= perp_lo) & (y0 <= perp_hi)
+        a0, a1 = x0, x1
+    else:
+        keep = (x1 >= perp_lo) & (x0 <= perp_hi)
+        a0, a1 = y0, y1
+    a0, a1 = a0[keep], a1[keep]
+    span = max(1.0, hi - lo)
+    i0 = np.clip(((a0 - lo) / span * bins).astype(int), 0, bins - 1)
+    i1 = np.clip(((a1 - lo) / span * bins).astype(int), 0, bins - 1)
+    diff = np.zeros(bins + 1)
+    np.add.at(diff, i0, 1)
+    np.add.at(diff, i1 + 1, -1)
+    return np.cumsum(diff[:-1])
+
+
+def _widest_gutter(prof, lo, hi, anchor_positions, bins, sheet_dim):
+    """Widest low-ink gap that puts at least one anchor on each side."""
+    peak = prof.max()
+    threshold = 0 if peak <= 0 else max(1.0, 0.06 * peak)
+    empty = prof <= threshold
+    span = hi - lo
+    best = None
+    i = 0
+    while i < bins:
+        if empty[i]:
+            j = i
+            while j < bins and empty[j]:
+                j += 1
+            cut = lo + (i + j) / 2.0 / bins * span
+            width = (j - i) / bins * span
+            left = sum(1 for p in anchor_positions if p < cut)
+            if 0 < left < len(anchor_positions) and width >= max(0.012 * sheet_dim, 40):
+                if best is None or width > best[1]:
+                    best = (cut, width)
+            i = j
+        else:
+            i += 1
+    return best
+
+
+def _xy_cut(region, anchors, ink, width, height, depth=0):
+    """Recursively split a region at its widest gutter until one anchor remains."""
+    x0, y0, x1, y1 = region
+    inside = [a for a in anchors if x0 <= a[0] <= x1 and y0 <= a[1] <= y1]
+    if len(inside) <= 1 or depth > 14:
+        return [(region, inside)]
+    bins = 400
+    gv = _widest_gutter(_density_profile(ink, x0, x1, y0, y1, 0, bins), x0, x1, [a[0] for a in inside], bins, width)
+    gh = _widest_gutter(_density_profile(ink, y0, y1, x0, x1, 1, bins), y0, y1, [a[1] for a in inside], bins, height)
+    choice = None
+    if gv and gh:
+        choice = ("v", gv) if gv[1] >= gh[1] else ("h", gh)
+    elif gv:
+        choice = ("v", gv)
+    elif gh:
+        choice = ("h", gh)
+    if not choice:
+        return [(region, inside)]
+    kind, (cut, _w) = choice
+    if kind == "v":
+        r1, r2 = (x0, y0, cut, y1), (cut, y0, x1, y1)
+    else:
+        r1, r2 = (x0, y0, x1, cut), (x0, cut, x1, y1)
+    return _xy_cut(r1, inside, ink, width, height, depth + 1) + _xy_cut(r2, inside, ink, width, height, depth + 1)
+
+
+def _candidates_from_heading_regions(spans, ink, width, height):
+    """Layout-agnostic strategy: XY-cut the sheet into one region per detail heading.
+
+    Recursively splits at the widest ink-free gutters (vertical or horizontal)
+    until each region holds a single heading anchor, then clamps each region to its
+    ink. Handles scattered/varied layouts that have no grid. Any region that still
+    holds multiple headings (a gutter could not be found) is split by assigning its
+    ink to the nearest heading -- the heading-seed fallback.
+    """
+    anchors = _detail_anchor_points(spans, width, height)
+    if len(anchors) < 2:
+        return []
+    ink_arr = _ink_xyxy(ink)
+    content = (0.0, 0.0, width * 0.86, height * 0.90)
+    boxes = []
+    for region, inside in _xy_cut(content, anchors, ink_arr, width, height):
+        if not inside:
+            continue
+        if len(inside) == 1:
+            cell = [int(region[0]), int(region[1]), int(region[2] - region[0]), int(region[3] - region[1])]
+            cell = _clamp_cell_to_ink(cell, ink, inside[0][2])
+            if _detail_sized(cell, width, height):
+                boxes.append(cell)
+        else:
+            boxes.extend(_seed_split_region(region, inside, ink, width, height))
+    return _dedupe_boxes(boxes)
+
+
+def _seed_split_region(region, anchors, ink, width, height):
+    """Heading-seed fallback: split an unsplittable region by nearest heading."""
+    rx0, ry0, rx1, ry1 = region
+    centers = [(a[0], a[1]) for a in anchors]
+    buckets: list[list[list[int]]] = [[a[2]] for a in anchors]
+    for b in ink:
+        bx = b[0] + b[2] / 2.0
+        by = b[1] + b[3] / 2.0
+        if not (rx0 <= bx <= rx1 and ry0 <= by <= ry1):
+            continue
+        best_i, best_d = 0, None
+        for i, (ax, ay) in enumerate(centers):
+            d = (bx - ax) ** 2 + (by - ay) ** 2
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+        buckets[best_i].append(b)
+    boxes = []
+    for group in buckets:
+        x0 = min(b[0] for b in group)
+        y0 = min(b[1] for b in group)
+        x1 = max(b[0] + b[2] for b in group)
+        y1 = max(b[1] + b[3] for b in group)
+        cell = [x0, y0, x1 - x0, y1 - y0]
+        if _detail_sized(cell, width, height):
+            boxes.append(cell)
+    return boxes
+
+
 def _in_title_block_strip(box, width, height) -> bool:
     """True for text in the sheet's title-block band (right edge or bottom strip).
 
@@ -503,6 +668,12 @@ def _build_options(page, scale_x, scale_y, width, height):
         if grid_candidates:
             options.append(("grid_anchors", grid_candidates))
 
+    # Layout-agnostic XY-cut + heading-seed: covers scattered/varied and
+    # number-less sheets where the grid strategy cannot fire.
+    region_candidates = _candidates_from_heading_regions(spans, ink, width, height)
+    if region_candidates:
+        options.append(("heading_regions", region_candidates))
+
     anchors, anchor_diag = _heading_anchors(spans, width, height)
     if anchors:
         anchor_candidates = _candidates_from_anchors(anchors, ink, width, height)
@@ -543,7 +714,7 @@ def _postprocess(boxes, width, height, *, merge_labels=True):
 
 
 def _score_option(name, boxes, width, height, max_boxes, source="vector"):
-    merge_labels = not (name.startswith("text_anchors") or name.startswith("grid"))
+    merge_labels = not (name.startswith("text_anchors") or name.startswith("grid") or name.startswith("heading_regions"))
     processed = _postprocess(boxes, width, height, merge_labels=merge_labels)
     results = _format_results(processed, width, height, max_boxes)
     for r in results:
