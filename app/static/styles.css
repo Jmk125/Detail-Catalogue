@@ -1765,3 +1765,117 @@ main {
   background: #f1f5f9;
   color: var(--muted);
 }
+
+.library-tree {
+  display: grid;
+  gap: 12px;
+}
+
+.tree-project,
+.tree-discipline {
+  border: 1px solid #d8dee9;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.tree-project > summary,
+.tree-discipline > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+}
+
+.tree-project > summary::-webkit-details-marker,
+.tree-discipline > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tree-project > summary::before,
+.tree-discipline > summary::before {
+  content: "▸";
+  color: #64748b;
+  transition: transform 0.15s ease;
+}
+
+.tree-project[open] > summary::before,
+.tree-discipline[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tree-project > summary {
+  background: #f8fafc;
+  justify-content: space-between;
+}
+
+.tree-project > summary::before {
+  margin-right: -2px;
+}
+
+.tree-project > summary span {
+  margin-right: auto;
+}
+
+.tree-project summary small,
+.tree-discipline summary small {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.tree-children {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px 34px;
+}
+
+.tree-discipline > summary {
+  background: #ffffff;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.tree-detail-list {
+  display: grid;
+  padding: 4px 0;
+}
+
+.tree-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, auto);
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  text-align: left;
+  color: inherit;
+}
+
+.tree-detail-row:hover,
+.tree-detail-row:focus {
+  background: #eef6ff;
+}
+
+.tree-detail-row.compared {
+  background: #fff7ed;
+}
+
+.tree-detail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.tree-detail-number {
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  justify-self: end;
+}
