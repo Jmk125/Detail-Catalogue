@@ -243,7 +243,42 @@ def _heading_window(spans):
     if len(sizes) < 3:
         return None
     body = _body_text_size(sizes)
-    return body, max(body * 1.25, body + 2.0), body * 2.5
+    return body, max(body * 1.25, body + 2.0), body * 3.25
+
+
+def _dominant_size_subset(boxes_with_size, width, height, min_total=4):
+    """Keep the boxes whose font size belongs to the detail-title layer.
+
+    Detail titles repeat at one font size and are spread across the sheet -- one
+    per detail region. Other heading-sized text sits at different sizes and is
+    spatially concentrated: structural grid bubbles, or a dense schedule/R-value
+    table whose many same-size rows could out-number the titles. We cluster by
+    size and pick the cluster scoring highest on ``count x spatial spread`` so a
+    populous-but-localised table cannot win over the dispersed title layer. Falls
+    back to all boxes when there is too little to discriminate.
+    """
+    if len(boxes_with_size) < min_total:
+        return [b for b, _s in boxes_with_size]
+    ordered = sorted(boxes_with_size, key=lambda bs: bs[1])
+    clusters: list[list[tuple]] = [[ordered[0]]]
+    for box, s in ordered[1:]:
+        if s - clusters[-1][-1][1] <= max(2.0, 0.18 * s):
+            clusters[-1].append((box, s))
+        else:
+            clusters.append([(box, s)])
+
+    def score(cluster):
+        cx = [b[0] + b[2] / 2.0 for b, _s in cluster]
+        cy = [b[1] + b[3] / 2.0 for b, _s in cluster]
+        spread = (max(cx) - min(cx)) / max(1, width) + (max(cy) - min(cy)) / max(1, height)
+        return len(cluster) * (0.25 + spread)
+
+    best = max(clusters, key=score)
+    if len(best) < 2:
+        return [b for b, _s in boxes_with_size]
+    lo = min(s for _b, s in best)
+    hi = max(s for _b, s in best)
+    return [b for b, s in boxes_with_size if lo <= s <= hi]
 
 
 def _detail_number_spans(spans, low, high, width, height):
@@ -398,12 +433,13 @@ def _detail_anchor_points(spans, width, height):
         groups = _merge_boxes(numbers, dx=int(body * 0.6), dy=int(body * 0.6))
     else:
         titles = [
-            box
+            (box, s)
             for (text, box, s) in spans
             if low <= s <= high
             and not _in_title_block_strip(box, width, height)
             and not (1 <= len(text.strip()) <= 3 and any(c.isdigit() for c in text.strip()))
         ]
+        titles = _dominant_size_subset(titles, width, height)
         if len(titles) < 2:
             return []
         groups = _merge_boxes(titles, dx=int(body * 2.0), dy=int(body * 2.2))
@@ -553,7 +589,10 @@ def _in_title_block_strip(box, width, height) -> bool:
     """
     cx = box[0] + box[2] / 2.0
     cy = box[1] + box[3] / 2.0
-    return cx > width * 0.86 or cy > height * 0.90
+    # Right edge: a full-height title-block column. Bottom strip: only its right
+    # portion -- a full-width bottom band would wrongly drop bottom-row details,
+    # which are common, whereas title blocks occupy the bottom-RIGHT corner.
+    return cx > width * 0.86 or (cy > height * 0.93 and cx > width * 0.60)
 
 
 def _heading_anchors(spans, width, height):
