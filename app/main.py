@@ -280,8 +280,9 @@ def library_search(
     q: str = "",
     bookmarked: str = "",
     sheet: str = "",
+    limit: int = Query(200, ge=1, le=5000),
 ):
-    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "design_teams": design_teams, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked, "sheet": sheet})}
+    return {"details": list_details(filters={"project": project, "project_ids": project_ids, "design_team": design_team, "design_teams": design_teams, "discipline": discipline, "disciplines": disciplines, "csi": csi, "tag": tag, "q": q, "bookmarked": bookmarked, "sheet": sheet, "limit": str(limit)})}
 
 
 @app.get("/api/library/facets")

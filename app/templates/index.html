@@ -147,7 +147,13 @@
         <div class="buttons">
           <button id="compareModeBtn">Compare Details</button>
           <button id="scanUnscannedBtn">Scan Untagged Details</button>
-          <button id="gridToggleBtn">Grid/List</button>
+          <label class="view-select-label">View
+            <select id="libraryViewSelect" aria-label="Library view">
+              <option value="grid">Grid</option>
+              <option value="list">List</option>
+              <option value="tree">Tree</option>
+            </select>
+          </label>
           <button id="refreshLibraryBtn">Refresh Library</button>
         </div>
       </div>
