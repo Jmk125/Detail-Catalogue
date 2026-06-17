@@ -902,6 +902,10 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
         )
         params.extend([q, q, q, q, q, q, q, q])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    try:
+        limit = max(1, min(5000, int(filters.get("limit") or 200)))
+    except (TypeError, ValueError):
+        limit = 200
     with connect() as conn:
         rows = conn.execute(
             f"""
@@ -913,9 +917,9 @@ def list_details(project_id: str | None = None, filters: dict[str, str] | None =
             JOIN pages ON pages.id = details.page_id
             {where}
             ORDER BY details.created_at DESC
-            LIMIT 200
+            LIMIT ?
             """,
-            params,
+            [*params, limit],
         ).fetchall()
         return _attach_designers([detail_row_to_api(r) for r in rows])
 

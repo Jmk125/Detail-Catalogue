@@ -70,7 +70,7 @@ $("compareModeBtn").addEventListener("click", toggleCompareMode);
 $("goToLibraryCompareBtn").addEventListener("click", () => enableCompareMode({ switchToLibrary: true }));
 $("clearCompareBtn").addEventListener("click", clearComparison);
 $("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
-$("gridToggleBtn").addEventListener("click", () => { cycleLibraryViewMode(); loadLibrary(); });
+$("libraryViewSelect").addEventListener("change", () => { libraryViewMode = $("libraryViewSelect").value; updateLibraryViewSelect(); loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
 $("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
 $("noteModal").addEventListener("click", (e) => { if (e.target === $("noteModal")) $("noteModal").classList.add("hidden"); });
@@ -107,7 +107,7 @@ const canvasWrap = $("canvasWrap");
 loadDesignTeams();
 loadProjectOptions();
 loadLibraryFacets();
-updateLibraryViewToggle();
+updateLibraryViewSelect();
 loadLibrary();
 
 dropZone.addEventListener("click", () => fileInput.click());
@@ -1955,7 +1955,8 @@ async function loadLibrary() {
     tag: $("filterTag").value || "",
     csi: $("filterCsi").value || "",
     sheet: $("filterSheet").value || "",
-    bookmarked: $("filterBookmarked").checked ? "1" : ""
+    bookmarked: $("filterBookmarked").checked ? "1" : "",
+    limit: libraryViewMode === "tree" ? "5000" : "200"
   });
   const res = await fetch(`/api/library/search?${params.toString()}`);
   if (!res.ok) return;
@@ -1972,19 +1973,10 @@ async function loadLibrary() {
   updateVisibleCompareControls();
 }
 
-function cycleLibraryViewMode() {
-  const order = ["grid", "list", "tree"];
-  const currentIndex = order.indexOf(libraryViewMode);
-  libraryViewMode = order[(currentIndex + 1) % order.length];
-  updateLibraryViewToggle();
-}
-
-function updateLibraryViewToggle() {
-  const btn = $("gridToggleBtn");
-  if (!btn) return;
-  const labels = { grid: "Grid View", list: "List View", tree: "Tree View" };
-  btn.textContent = labels[libraryViewMode] || "Grid View";
-  btn.title = "Switch library view (grid, list, tree)";
+function updateLibraryViewSelect() {
+  const select = $("libraryViewSelect");
+  if (!select) return;
+  select.value = libraryViewMode;
 }
 
 function libraryResultsClassName() {
@@ -2015,7 +2007,7 @@ function renderLibraryTree(container, details) {
   for (const [projectName, projectDetails] of sortedProjects) {
     const projectNode = document.createElement("details");
     projectNode.className = "tree-project";
-    projectNode.open = true;
+    projectNode.open = false;
     projectNode.innerHTML = `<summary><span>${escapeHtml(projectName)}</span><small>${projectDetails.length} detail${projectDetails.length === 1 ? "" : "s"}</small></summary>`;
 
     const disciplineWrap = document.createElement("div");
@@ -2026,7 +2018,7 @@ function renderLibraryTree(container, details) {
     for (const [discipline, disciplineDetails] of sortedDisciplines) {
       const disciplineNode = document.createElement("details");
       disciplineNode.className = "tree-discipline";
-      disciplineNode.open = true;
+      disciplineNode.open = false;
       disciplineNode.innerHTML = `<summary>${disciplineBadge(discipline)}<span>${escapeHtml(discipline)}</span><small>${disciplineDetails.length}</small></summary>`;
 
       const list = document.createElement("div");
