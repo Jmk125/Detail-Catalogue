@@ -8,7 +8,7 @@ let panState = null;
 let zoom = 1.0;
 let currentMergeTargetIds = [];
 let pollTimer = null;
-let libraryGrid = true;
+let libraryViewMode = "grid";
 let loadedPageId = null;
 let drawState = null;
 let deletedBoxPatterns = [];
@@ -70,7 +70,7 @@ $("compareModeBtn").addEventListener("click", toggleCompareMode);
 $("goToLibraryCompareBtn").addEventListener("click", () => enableCompareMode({ switchToLibrary: true }));
 $("clearCompareBtn").addEventListener("click", clearComparison);
 $("scanUnscannedBtn").addEventListener("click", scanUnscannedDetails);
-$("gridToggleBtn").addEventListener("click", () => { libraryGrid = !libraryGrid; loadLibrary(); });
+$("gridToggleBtn").addEventListener("click", () => { cycleLibraryViewMode(); loadLibrary(); });
 $("closeDetailBtn").addEventListener("click", () => $("detailModal").classList.add("hidden"));
 $("closeNoteBtn").addEventListener("click", () => $("noteModal").classList.add("hidden"));
 $("noteModal").addEventListener("click", (e) => { if (e.target === $("noteModal")) $("noteModal").classList.add("hidden"); });
@@ -107,6 +107,7 @@ const canvasWrap = $("canvasWrap");
 loadDesignTeams();
 loadProjectOptions();
 loadLibraryFacets();
+updateLibraryViewToggle();
 loadLibrary();
 
 dropZone.addEventListener("click", () => fileInput.click());
@@ -1960,11 +1961,101 @@ async function loadLibrary() {
   if (!res.ok) return;
   const data = await res.json();
   const div = $("libraryResults");
-  div.className = libraryGrid ? "library-grid" : "library-list";
+  div.className = libraryResultsClassName();
   div.innerHTML = "";
   if (!data.details.length) { div.textContent = "No details found yet."; return; }
-  for (const d of data.details) div.appendChild(detailCard(d, false, !libraryGrid));
+  if (libraryViewMode === "tree") {
+    renderLibraryTree(div, data.details);
+  } else {
+    for (const d of data.details) div.appendChild(detailCard(d, false, libraryViewMode === "list"));
+  }
   updateVisibleCompareControls();
+}
+
+function cycleLibraryViewMode() {
+  const order = ["grid", "list", "tree"];
+  const currentIndex = order.indexOf(libraryViewMode);
+  libraryViewMode = order[(currentIndex + 1) % order.length];
+  updateLibraryViewToggle();
+}
+
+function updateLibraryViewToggle() {
+  const btn = $("gridToggleBtn");
+  if (!btn) return;
+  const labels = { grid: "Grid View", list: "List View", tree: "Tree View" };
+  btn.textContent = labels[libraryViewMode] || "Grid View";
+  btn.title = "Switch library view (grid, list, tree)";
+}
+
+function libraryResultsClassName() {
+  if (libraryViewMode === "tree") return "library-tree";
+  return libraryViewMode === "grid" ? "library-grid" : "library-list";
+}
+
+function groupByKey(items, keyFn) {
+  return items.reduce((groups, item) => {
+    const key = keyFn(item) || "Uncategorized";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+    return groups;
+  }, new Map());
+}
+
+function drawingNumberLabel(d) {
+  const detailNumber = (d.detail_number || "").trim();
+  const sheetNumber = (d.sheet_number || "").trim();
+  if (detailNumber && sheetNumber) return `${detailNumber} / ${sheetNumber}`;
+  return detailNumber || sheetNumber || "No drawing #";
+}
+
+function renderLibraryTree(container, details) {
+  const projects = groupByKey(details, d => d.project_name || "Unnamed project");
+  const sortedProjects = Array.from(projects.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  for (const [projectName, projectDetails] of sortedProjects) {
+    const projectNode = document.createElement("details");
+    projectNode.className = "tree-project";
+    projectNode.open = true;
+    projectNode.innerHTML = `<summary><span>${escapeHtml(projectName)}</span><small>${projectDetails.length} detail${projectDetails.length === 1 ? "" : "s"}</small></summary>`;
+
+    const disciplineWrap = document.createElement("div");
+    disciplineWrap.className = "tree-children";
+    const disciplines = groupByKey(projectDetails, d => d.discipline || "unknown");
+    const sortedDisciplines = Array.from(disciplines.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+    for (const [discipline, disciplineDetails] of sortedDisciplines) {
+      const disciplineNode = document.createElement("details");
+      disciplineNode.className = "tree-discipline";
+      disciplineNode.open = true;
+      disciplineNode.innerHTML = `<summary>${disciplineBadge(discipline)}<span>${escapeHtml(discipline)}</span><small>${disciplineDetails.length}</small></summary>`;
+
+      const list = document.createElement("div");
+      list.className = "tree-detail-list";
+      disciplineDetails
+        .slice()
+        .sort((a, b) => drawingNumberLabel(a).localeCompare(drawingNumberLabel(b), undefined, { numeric: true, sensitivity: "base" }))
+        .forEach(detail => list.appendChild(treeDetailRow(detail)));
+      disciplineNode.appendChild(list);
+      disciplineWrap.appendChild(disciplineNode);
+    }
+
+    projectNode.appendChild(disciplineWrap);
+    container.appendChild(projectNode);
+  }
+}
+
+function treeDetailRow(d) {
+  const row = document.createElement("button");
+  const detailId = String(d.id);
+  row.type = "button";
+  row.className = "tree-detail-row" + (compareDetailIds.has(detailId) ? " compared" : "");
+  row.dataset.detailId = detailId;
+  row.innerHTML = `
+    <span class="tree-detail-title">${escapeHtml(d.detail_title || "Untitled detail")}</span>
+    <span class="tree-detail-number">${escapeHtml(drawingNumberLabel(d))}</span>
+  `;
+  row.addEventListener("click", () => openDetail(d.id));
+  return row;
 }
 
 async function openDetail(id) {
