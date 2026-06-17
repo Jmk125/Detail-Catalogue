@@ -219,6 +219,39 @@ class VectorDetectTests(unittest.TestCase):
         self.assertGreaterEqual(len(report["results"]), 10)
         self.assertLessEqual(len(report["results"]), 12)
 
+    def test_title_block_strip_keeps_bottom_center_details(self):
+        # Title blocks live on the right edge or bottom-right corner; a full-width
+        # bottom band would wrongly drop bottom-row details. cx in px, cy in px.
+        W, H = 6000, 4000
+        # bottom-center detail title (just above the bottom edge, centered)
+        self.assertFalse(v._in_title_block_strip([2900, 3850, 200, 40], W, H))
+        # bottom-left detail
+        self.assertFalse(v._in_title_block_strip([300, 3850, 200, 40], W, H))
+        # right-edge title block column
+        self.assertTrue(v._in_title_block_strip([5400, 1000, 300, 40], W, H))
+        # bottom-right title-block corner
+        self.assertTrue(v._in_title_block_strip([4200, 3850, 300, 40], W, H))
+
+    def test_heading_window_admits_large_titles(self):
+        # Detail titles can be up to ~3x the body size (e.g. 49px titles over 19px
+        # body); the window must admit them while excluding the sheet title/logo.
+        spans = [("dim", [0, 0, 10, 10], 19.0)] * 50
+        window = v._heading_window(spans)
+        self.assertIsNotNone(window)
+        body, low, high = window
+        self.assertEqual(body, 19.0)
+        self.assertGreaterEqual(high, 19.0 * 3.0)  # 49px (2.58x) must fit
+
+    def test_dominant_size_subset_prefers_dispersed_titles(self):
+        # A dispersed title layer (8 titles across the sheet) must win over a
+        # populous but concentrated table (12 same-size rows in one corner).
+        W, H = 6000, 4000
+        titles = [([300 + i * 700, 200 + (i % 2) * 1800, 200, 40], 49.0) for i in range(8)]
+        table = [([5200, 1000 + i * 30, 150, 25], 26.0) for i in range(12)]
+        kept = v._dominant_size_subset(titles + table, W, H)
+        self.assertEqual(len(kept), 8)
+        self.assertTrue(all(box in [t[0] for t in titles] for box in kept))
+
     def test_scanned_page_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf = Path(tmp) / "scanned.pdf"
