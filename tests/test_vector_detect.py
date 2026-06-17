@@ -67,6 +67,31 @@ def _build_unboxed_detail_pdf(path: Path) -> tuple[int, int]:
     return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
 
 
+def _build_scattered_details_pdf(path: Path) -> tuple[int, int]:
+    """Details at irregular (non-grid) positions and sizes, separated by whitespace.
+    Exercises the XY-cut / heading-region strategy that does not assume a grid."""
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    # (x, y, w, h) placements (PDF points, within the page) that do not line up
+    # on a grid and vary in size.
+    placements = [
+        (70, 70, 300, 240),
+        (620, 90, 380, 220),
+        (110, 470, 360, 260),
+        (700, 500, 300, 200),
+    ]
+    for i, (x, y, w, h) in enumerate(placements, start=1):
+        for off in range(20, int(h) - 50, 18):
+            page.draw_line(fitz.Point(x + 12, y + off), fitz.Point(x + w - 12, y + off), width=0.5)
+        page.insert_text(fitz.Point(x + 6, y + h - 14), f"{i}", fontsize=16)
+        page.insert_text(fitz.Point(x + 34, y + h - 14), "ROOF DETAIL", fontsize=16)
+        for k in range(6):  # small dimension text so the heading font stands out
+            page.insert_text(fitz.Point(x + 20 + (k % 3) * 60, y + 20 + (k // 3) * 20), '6"', fontsize=7)
+    doc.save(str(path))
+    doc.close()
+    return int(PAGE_W * ZOOM), int(PAGE_H * ZOOM)
+
+
 def _build_unnumbered_titled_pdf(path: Path) -> tuple[int, int]:
     """Separated, unboxed details with a title but NO detail number (a notes/detail
     sheet like C100). The grid strategy cannot fire; clustering or text anchors
@@ -157,6 +182,20 @@ class VectorDetectTests(unittest.TestCase):
             boxes = detect_boxes_from_pdf(pdf, 0, zoom=ZOOM, page_pixel_size=(px_w, px_h))
         self.assertIsNotNone(boxes)
         self.assertGreaterEqual(len(boxes), 4)
+
+    def test_scattered_nongrid_details_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "scattered.pdf"
+            px_w, px_h = _build_scattered_details_pdf(pdf)
+            doc = fitz.open(str(pdf))
+            report = v.page_detection_report(doc[0], zoom=ZOOM, page_pixel_size=(px_w, px_h))
+            doc.close()
+        # 4 irregularly-placed details; the heading-region (XY-cut) strategy should
+        # recover them without assuming a grid.
+        names = {s["name"] for s in report["strategies"]}
+        self.assertIn("heading_regions", names)
+        self.assertGreaterEqual(len(report["results"]), 3)
+        self.assertLessEqual(len(report["results"]), 5)
 
     def test_unnumbered_titled_sheet_still_detected(self):
         with tempfile.TemporaryDirectory() as tmp:
